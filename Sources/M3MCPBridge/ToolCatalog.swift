@@ -292,7 +292,7 @@ enum ToolCatalog {
                 "fields": [
                     "type": "array",
                     "items": ["type": "string"],
-                    "description": "Which fields to match against: subject, sender, recipients, body. Default [subject, sender, recipients]. sender and recipients match the display name AND the address, so a firstname.lastname query works. body reads message files and is bounded by max_candidates."
+                    "description": "Which fields to match against: subject, sender, recipients, body. Default [subject, sender, recipients]. sender and recipients match the display name AND the address, so a firstname.lastname query works. body reads message files and is bounded by max_candidates. Missing or truncated bodies make meta.total_exact false; check meta.bodies_unavailable and meta.bodies_truncated, even when no matches were returned."
                 ],
                 "match": [
                     "type": "string",
@@ -300,7 +300,7 @@ enum ToolCatalog {
                 ],
                 "unread_only": ["type": "boolean", "description": "When true, only return unread messages."],
                 "include_junk": ["type": "boolean", "description": "When true, also search junk mailboxes and messages flagged as junk. Default false."],
-                "include_body": ["type": "boolean", "description": "When true, include a message body snippet in each item's preview. Default false."],
+                "include_body": ["type": "boolean", "description": "When true, include up to 400 characters of local body text in each preview. metadata.body_status distinguishes available, empty (no extracted text), and unavailable. Exchange may have no local .emlx; unavailable is not an empty message. meta.body_coverage_complete reports inspected-source coverage. Default false."],
                 "include_recipients": ["type": "boolean", "description": "When true, include each message's recipients as metadata.to. Default false."],
                 "auto_intent": [
                     "type": "boolean",
@@ -319,7 +319,7 @@ enum ToolCatalog {
                     "description": "Absolute lower bound, inclusive. Accepts YYYY, YYYY-MM, YYYY-MM-DD, or a full ISO 8601 timestamp; the short forms resolve to the START of the named period. Local time unless the timestamp carries a zone. Cannot be combined with since_hours."
                 ],
                 "date_to": ["type": "string",
-                    "description": "Absolute upper bound, inclusive. Same formats as date_from, but the short forms resolve to the END of the named period, so date_to=2025 includes 31 December. meta.date_to_applied reports the instant actually used."
+                    "description": "Absolute upper bound, inclusive. Same formats as date_from, but the short forms resolve to the END of the named period, so date_to=2025 includes 31 December. meta.date_to_applied reports the inclusive end at millisecond resolution; meta.date_to_exclusive gives the exact exclusive next-period boundary for short forms. Gregorian dates; nonexistent local times are rejected."
                 ],
                 "max_candidates": ["type": "integer", "description": "Upper bound on messages inspected when body matching is requested. Default 500. meta.scan_capped says whether the bound was reached."]
             ])
@@ -334,7 +334,7 @@ enum ToolCatalog {
         ),
         MCPTool(
             name: .mailRead,
-            description: "Read one email by its canonical numeric id from mail_search. Reads at most 4 MiB from the local .emlx source and returns at most 8,000 characters of extracted body text, with truncation markers when a bound is reached. There is no AppleScript fallback. Requires read access to the selected data folder.",
+            description: "Read one email by its canonical numeric id from mail_search. Reads at most 4 MiB from the local .emlx source and returns at most 8,000 characters of extracted body text, with truncation markers when a bound is reached. metadata.body_status/body_reason distinguish missing or unreadable .emlx from an empty extracted body. Exchange and other accounts may keep bodies outside local .emlx files; missing local text does not mean an empty message. Unavailable bodies have no preview. There is no AppleScript fallback. Requires read access to the selected data folder.",
             schema: objectSchema(properties: [
                 "id": ["type": "string", "description": "Message id returned by mail_search."]
             ], required: ["id"])

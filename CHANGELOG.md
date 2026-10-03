@@ -12,19 +12,6 @@
   renew consent for existing installations before the server can start.
 - Document the September 19 Apple review response and its verification limits.
 
-- **Mail date range filters.** `mail_search` gains `date_from` and `date_to` (strings, maximum
-  40 characters) for an absolute time range: `YYYY`, `YYYY-MM`, `YYYY-MM-DD`, or a full ISO 8601
-  timestamp, read in the machine's local time zone unless the timestamp carries one. `date_from`
-  resolves to the start of the named period, `date_to` to its inclusive end, so `date_to=2025`
-  includes 31 December. The filter handles both date encodings of the Envelope Index (Unix epoch
-  and Core Data reference seconds) with separate SQL branches. Invalid input — unrecognized
-  format, impossible date, year outside 1970–2100, reversed range — fails closed with a clear
-  message instead of an empty result. A `since_hours` above zero next to a range is an
-  invocation error; a `since_hours` derived by `auto_intent` is discarded, and `meta.time_filter`
-  reports which time filter ran. `meta.date_from_applied` and `meta.date_to_applied` show the
-  resolved instants including the zone. See the README section "Mail date range filters" for the
-  documented sort quirk of the mixed-encoding date column.
-
 - **Mail flag metadata and filters.** `mail_search` and `mail_read` now expose Apple Mail's
   marker colors: `metadata.flagged`, and for flagged messages `metadata.flag_color` (raw code
   from bits 39–41 of the `flags` bitmask) plus `metadata.flag_color_name` (`unknown` for
@@ -41,6 +28,21 @@
   Two caveats of the data source are documented alongside: a newly received message can take
   minutes to be indexed, and gray flags on Exchange accounts can read as red because
   Exchange follow-up flags have no gray.
+
+## 1.0.3
+
+Prepared source candidate, build 23; not uploaded to TestFlight or the App Store.
+
+- Add absolute `date_from`/`date_to` Mail search filters from PR #34, with strict Gregorian
+  timestamp validation, explicit/local zones, complete named periods and resolved-bound metadata.
+- Normalize the Mail index's inherited Unix/reference date heuristic consistently for filtering
+  and sorting before pagination; document remaining ambiguity in historical/future timestamps.
+- Address #35 with explicit Mail body availability/reason/source metadata and incomplete-search
+  coverage. Missing local Exchange bodies are no longer represented as empty message content.
+  No AppleScript fallback or additional permission is introduced.
+- Replace fixed sleeps in the cancellation/admission regression test with child synchronization.
+- Add regression coverage for missing/empty/malformed bodies, mixed-epoch ordering, invalid dates,
+  non-Gregorian preferences, fractional boundaries and daylight-saving transitions.
 
 ## 1.0.2 — 2026-10-03
 

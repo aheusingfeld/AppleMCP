@@ -198,7 +198,8 @@ final class MailProvider {
             // exists only because Swift requires exhaustive error handling.
             return ToolResponse(ok: false, source: sourceName, message: error.localizedDescription)
         }
-        if let fromInstant = from.instant, let toInstant = to.instant, fromInstant > toInstant {
+        if let fromInstant = from.instant, let toInstant = to.instant,
+           to.exclusiveEnd.map({ fromInstant >= $0 }) ?? (fromInstant > toInstant) {
             return ToolResponse(
                 ok: false,
                 source: sourceName,
@@ -221,7 +222,8 @@ final class MailProvider {
             dateFromRaw: input.string("date_from").trimmingCharacters(in: .whitespacesAndNewlines),
             dateToRaw: input.string("date_to").trimmingCharacters(in: .whitespacesAndNewlines),
             dateFrom: from.instant,
-            dateTo: to.instant
+            dateTo: to.instant,
+            dateToExclusive: to.exclusiveEnd
         )
         guard request.terms.count <= Self.maximumQueryTerms else {
             return ToolResponse(
@@ -539,6 +541,13 @@ final class MailProvider {
         case none
         /// A resolved instant. For date_to this is the inclusive end of the named period.
         case instant(Date)
+        /// Exclusive start of the next period; avoids dropping sub-millisecond messages.
+        case periodEnd(Date)
+
+        var exclusiveEnd: Date? {
+            if case .periodEnd(let nextStart) = self { return nextStart }
+            return nil
+        }
 
         struct ParseError: Error { let message: String }
 
@@ -549,12 +558,12 @@ final class MailProvider {
             switch self {
             case .none: return nil
             case .instant(let date): return date
+            case .periodEnd(let nextStart): return nextStart.addingTimeInterval(-0.001)
             }
         }
 
-        /// Years outside this window are refused: the date column's two-epoch threshold at
-        /// 1000000000 only classifies sane modern dates, so a bound outside it would silently
-        /// misclassify whole centuries.
+        /// Bound the accepted query dates. This does not disambiguate the index's epoch;
+        /// that inherited heuristic is reported separately in response metadata.
         private static let minimumYear = 1_970
         private static let maximumYear = 2_100
 
@@ -571,36 +580,17 @@ final class MailProvider {
             "Mail date_from and date_to accept real calendar dates only; this input names a date that does not exist."
 
         /// Empty input becomes .none. Anything unparseable throws, at parse time.
-        static func parse(_ raw: String, edge: Edge, calendar: Calendar) throws -> MailDateBound {
+        static func parse(_ raw: String, edge: Edge, calendar userCalendar: Calendar) throws -> MailDateBound {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = userCalendar.timeZone
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return .none }
 
-            // 1. Full ISO 8601 timestamp, with or without a zone designator. Measured on this
-            //    toolchain: `.withInternetDateTime` alone refuses zoneless input and any fraction,
-            //    and `.withFractionalSeconds` requires the fraction, so the chain needs all three
-            //    steps. A stamp that carries a zone is resolved by the first two; the zoneless
-            //    DateFormatter reads the stamp in the machine's local zone, which is what the
-            //    time-zone rule wants.
-            let internetDateTime = ISO8601DateFormatter()
-            internetDateTime.formatOptions = .withInternetDateTime
-            internetDateTime.timeZone = calendar.timeZone
-            if let date = internetDateTime.date(from: trimmed) {
-                return try Self.timestamp(date, raw: trimmed)
-            }
-
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            fractional.timeZone = calendar.timeZone
-            if let date = fractional.date(from: trimmed) {
-                return try Self.timestamp(date, raw: trimmed)
-            }
-
-            let zoneless = DateFormatter()
-            zoneless.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-            zoneless.timeZone = calendar.timeZone
-            zoneless.isLenient = false
-            if let date = zoneless.date(from: trimmed) {
-                return try Self.timestamp(date, raw: trimmed)
+            // ISO dates always use the Gregorian calendar, irrespective of the user's
+            // preferred display calendar. Validate components explicitly: Foundation's ISO
+            // formatter can normalize impossible dates rather than rejecting them.
+            if trimmed.contains("T") {
+                return try timestamp(trimmed, calendar: calendar)
             }
 
             // 2-4. Short forms, strict ASCII digit checks: Int(_:) alone would also accept "+5"
@@ -619,17 +609,51 @@ final class MailProvider {
             }
         }
 
-        /// A full timestamp: the year window applies here too, read from the input's leading
-        /// digits — every string the formatters accept starts with the year.
-        private static func timestamp(_ date: Date, raw: String) throws -> MailDateBound {
-            let yearPrefix = String(raw.prefix(4))
-            guard Self.digitsOnly(yearPrefix, length: 4), let year = Int(yearPrefix) else {
-                throw ParseError(message: Self.invalidInputMessage)
+        private static func timestamp(_ raw: String, calendar: Calendar) throws -> MailDateBound {
+            let pattern = #"^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,9}))?(Z|[+-][0-9]{2}:[0-9]{2})?$"#
+            let regex = try NSRegularExpression(pattern: pattern)
+            guard let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+                  match.range.length == raw.utf16.count else {
+                throw ParseError(message: invalidInputMessage)
             }
+            func part(_ index: Int) -> String {
+                guard let range = Range(match.range(at: index), in: raw) else { return "" }
+                return String(raw[range])
+            }
+            let year = Int(part(1))!
             guard (minimumYear...maximumYear).contains(year) else {
-                throw ParseError(message: Self.yearWindowMessage)
+                throw ParseError(message: yearWindowMessage)
             }
-            return .instant(date)
+            let month = Int(part(2))!, day = Int(part(3))!
+            let hour = Int(part(4))!, minute = Int(part(5))!, second = Int(part(6))!
+            guard (1...12).contains(month), (1...31).contains(day), hour < 24, minute < 60, second < 60 else {
+                throw ParseError(message: impossibleDateMessage)
+            }
+            var resolvedCalendar = calendar
+            let zone = part(8)
+            if zone == "Z" {
+                resolvedCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            } else if !zone.isEmpty {
+                let components = zone.dropFirst().split(separator: ":")
+                let hours = Int(components[0])!, minutes = Int(components[1])!
+                guard hours < 24, minutes < 60,
+                      let timeZone = TimeZone(secondsFromGMT: (zone.first == "-" ? -1 : 1) * (hours * 3600 + minutes * 60)) else {
+                    throw ParseError(message: invalidInputMessage)
+                }
+                resolvedCalendar.timeZone = timeZone
+            }
+            let components = DateComponents(year: year, month: month, day: day,
+                                            hour: hour, minute: minute, second: second)
+            guard let date = resolvedCalendar.date(from: components) else {
+                throw ParseError(message: impossibleDateMessage)
+            }
+            let roundTrip = resolvedCalendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+            guard roundTrip == components else {
+                // Also refuses local times skipped by a daylight-saving transition.
+                throw ParseError(message: impossibleDateMessage)
+            }
+            let fraction = part(7).isEmpty ? 0 : Double("0." + part(7))!
+            return .instant(date.addingTimeInterval(fraction))
         }
 
         /// Builds the named period through Calendar and takes its start, or — for edge .end —
@@ -661,10 +685,8 @@ final class MailProvider {
             case .start:
                 return .instant(start)
             case .end:
-                // The last representable moment of the period, not the start of the next one,
-                // so the SQL `<=` comparison is inclusive over the whole named period. Calendar
-                // provides the next start; the one-millisecond step back is only the resolution
-                // of "last representable moment", so date_to=2025 reads as 23:59:59.999.
+                // Compare short-form upper bounds with < nextStart, preserving every
+                // representable timestamp in the period, including fractions below 1 ms.
                 let nextStart: Date
                 switch (month, day) {
                 case (nil, nil):
@@ -683,7 +705,7 @@ final class MailProvider {
                     }
                     nextStart = added
                 }
-                return .instant(nextStart.addingTimeInterval(-1.0 / 1_000))
+                return .periodEnd(nextStart)
             }
         }
 
@@ -734,6 +756,7 @@ final class MailProvider {
         let dateToRaw: String
         let dateFrom: Date?         // nil exactly when no filter was requested
         let dateTo: Date?
+        let dateToExclusive: Date?
         let timeFilterDescription: String
 
         init(
@@ -742,7 +765,8 @@ final class MailProvider {
             dateFromRaw: String,
             dateToRaw: String,
             dateFrom: Date?,
-            dateTo: Date?
+            dateTo: Date?,
+            dateToExclusive: Date?
         ) {
             rawQuery = input.string("query").trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -804,6 +828,7 @@ final class MailProvider {
             self.dateToRaw = dateToRaw
             self.dateFrom = dateFrom
             self.dateTo = dateTo
+            self.dateToExclusive = dateToExclusive
             timeFilterDescription = rangeRequested
                 ? "date_range"
                 : (sinceHours > 0 ? "since_hours" : "none")
@@ -889,17 +914,21 @@ final class MailProvider {
 
             var matched: [MailRow] = []
             var matchedFields: [String: [String]] = [:]
-            var bodies: [String: String] = [:]
+            var bodies: [String: MailBody] = [:]
+            var unavailable = 0
+            var truncatedBodies = 0
             for row in candidates {
                 try checkCancellation(.bodyCandidate)
                 let body = try loadBody(row: row, mailboxes: mailboxes, mailRoot: mailRoot, database: database)
+                if body.status == "unavailable" { unavailable += 1 }
+                if body.truncated { truncatedBodies += 1 }
                 let hits = try fieldsMatched(
-                    request, row: row, recipients: recipientText[row.id] ?? "", body: body
+                    request, row: row, recipients: recipientText[row.id] ?? "", body: body.body
                 )
                 guard !hits.isEmpty else { continue }
                 matched.append(row)
                 matchedFields[row.id] = hits
-                if request.includeBody { bodies[row.id] = body }
+                bodies[row.id] = body
             }
 
             let page = Array(matched.dropFirst(request.offset).prefix(request.limit))
@@ -912,7 +941,7 @@ final class MailProvider {
                     mailboxes: mailboxes,
                     fieldsMatched: matchedFields[row.id] ?? [],
                     recipients: request.includeRecipients ? recipientText[row.id] : nil,
-                    bodySnippet: request.includeBody ? bodies[row.id] : nil
+                    bodySnippet: bodies[row.id], includeBodyPreview: request.includeBody
                 ))
             }
 
@@ -927,13 +956,14 @@ final class MailProvider {
                         hasMore: hasMore,
                         scanCapped: scanCapped,
                         responseBudgetCapped: responseBudgetCapped,
-                        request: request
+                        request: request, unavailableBodies: unavailable, truncatedBodies: truncatedBodies
                     ),
                     meta: baseMeta(request, schema: schema, mailboxes: mailboxes, total: matched.count,
-                                   returned: items.count, totalExact: !scanCapped, hasMore: hasMore,
+                                   returned: items.count, totalExact: !scanCapped && unavailable == 0 && truncatedBodies == 0, hasMore: hasMore,
                                    scanned: candidates.count, scanCapped: scanCapped,
                                    responseBudgetCapped: responseBudgetCapped,
-                                   mailboxFilterMatched: mailboxFilterMatched)
+                                   mailboxFilterMatched: mailboxFilterMatched,
+                                   bodiesChecked: candidates.count, unavailableBodies: unavailable, truncatedBodies: truncatedBodies)
                 )
             }
         }
@@ -949,17 +979,19 @@ final class MailProvider {
 
         var candidateItems: [DataItem] = []
         candidateItems.reserveCapacity(rows.count)
+        var unavailable = 0
+        var truncatedBodies = 0
         for row in rows {
             try checkCancellation(.bodyCandidate)
-            var body = ""
-            if request.includeBody {
-                body = try loadBody(row: row, mailboxes: mailboxes, mailRoot: mailRoot, database: database)
-            }
+            let body = request.includeBody
+                ? try loadBody(row: row, mailboxes: mailboxes, mailRoot: mailRoot, database: database) : nil
+            if body?.status == "unavailable" { unavailable += 1 }
+            if body?.truncated == true { truncatedBodies += 1 }
             let hits = try fieldsMatched(
                 request,
                 row: row,
                 recipients: recipientText[row.id] ?? "",
-                body: body
+                body: body?.body ?? ""
             )
             try checkCancellation(.responseItem)
             candidateItems.append(makeItem(
@@ -967,7 +999,7 @@ final class MailProvider {
                 mailboxes: mailboxes,
                 fieldsMatched: hits,
                 recipients: request.includeRecipients ? recipientText[row.id] : nil,
-                bodySnippet: request.includeBody ? body : nil
+                bodySnippet: body
             ))
         }
 
@@ -982,12 +1014,14 @@ final class MailProvider {
                     hasMore: hasMore,
                     scanCapped: false,
                     responseBudgetCapped: responseBudgetCapped,
-                    request: request
+                    request: request, unavailableBodies: unavailable, truncatedBodies: truncatedBodies
                 ),
                 meta: baseMeta(request, schema: schema, mailboxes: mailboxes, total: total, returned: items.count,
                                totalExact: true, hasMore: hasMore, scanned: total, scanCapped: false,
                                responseBudgetCapped: responseBudgetCapped,
-                               mailboxFilterMatched: mailboxFilterMatched)
+                               mailboxFilterMatched: mailboxFilterMatched,
+                               bodiesChecked: request.includeBody ? rows.count : 0,
+                               unavailableBodies: unavailable, truncatedBodies: truncatedBodies)
             )
         }
     }
@@ -1006,7 +1040,10 @@ final class MailProvider {
         scanned: Int,
         scanCapped: Bool,
         responseBudgetCapped: Bool,
-        mailboxFilterMatched: Int
+        mailboxFilterMatched: Int,
+        bodiesChecked: Int = 0,
+        unavailableBodies: Int = 0,
+        truncatedBodies: Int = 0
     ) -> [String: String] {
         [
             "returned": String(returned),
@@ -1040,10 +1077,17 @@ final class MailProvider {
             "date_to": request.dateToRaw,
             "date_from_applied": request.dateFrom.map(Self.isoString) ?? "",
             "date_to_applied": request.dateTo.map(Self.isoString) ?? "",
+            "date_to_exclusive": request.dateToExclusive.map(Self.isoString) ?? "",
             "time_filter": request.timeFilterDescription,   // "date_range", "since_hours" or "none"
             "mailboxes_known": String(mailboxes.count),
             "recipients_searchable": String(schema.canSearchRecipients),
-            "body_searchable": "true"
+            "body_searchable": "true",
+            "bodies_checked": String(bodiesChecked),
+            "bodies_unavailable": String(unavailableBodies),
+            "bodies_truncated": String(truncatedBodies),
+            "body_coverage_complete": request.searchesBody || request.includeBody
+                ? String(unavailableBodies == 0 && truncatedBodies == 0 && !scanCapped) : "not_requested",
+            "date_encoding": "heuristic_unix_or_reference_seconds"
         ]
     }
 
@@ -1052,8 +1096,13 @@ final class MailProvider {
         hasMore: Bool,
         scanCapped: Bool,
         responseBudgetCapped: Bool,
-        request: SearchRequest
+        request: SearchRequest,
+        unavailableBodies: Int = 0,
+        truncatedBodies: Int = 0
     ) -> String? {
+        if unavailableBodies > 0 || truncatedBodies > 0 {
+            return "Body coverage is incomplete: \(unavailableBodies) local message bodies unavailable, \(truncatedBodies) truncated. Exchange and other accounts may not keep .emlx bodies locally. This does not mean those messages are empty. Check meta.total_exact, meta.has_more and meta.scan_capped before drawing conclusions."
+        }
         if responseBudgetCapped {
             return "The encoded Mail response reached its byte budget; only complete messages were returned and meta.has_more is true. Continue with offset \(request.offset + items.count)."
         }
@@ -1276,43 +1325,26 @@ final class MailProvider {
             // value that bind() produces, and the filter would silently return nothing.
         }
 
-        // In SQL, not after the LIMIT. Filtering a already-truncated page in memory is only correct
-        // while the ORDER BY happens to be the same column, and silently wrong the moment it is not.
-        if request.sinceHours > 0, let date = schema.date {
-            let cutoff = Date().addingTimeInterval(-Double(request.sinceHours) * 3_600)
-            let epoch = cutoff.timeIntervalSince1970
-            let reference = cutoff.timeIntervalSinceReferenceDate
-            predicates.append(
-                "((messages.\(Self.quoted(date)) > 1000000000 AND messages.\(Self.quoted(date)) >= \(epoch))"
-                + " OR (messages.\(Self.quoted(date)) <= 1000000000 AND messages.\(Self.quoted(date)) >= \(reference)))"
-            )
-        }
-
-        // The resolution in SearchRequest guarantees at most one of the two time filters above
-        // and below is non-empty, so this block sits beside the since_hours block without
-        // ever ANDing into it.
-        if request.dateFrom != nil || request.dateTo != nil {
+        // One interpretation for both time filters and ordering, before LIMIT/OFFSET.
+        if request.sinceHours > 0 || request.dateFrom != nil || request.dateTo != nil {
             guard let date = schema.date else {
                 throw MailStoreFailure("Date filtering is not available in this Mail index schema.")
             }
-            let column = "messages.\(Self.quoted(date))"
-            // The column mixes Unix epoch seconds and Core Data reference-date seconds, so each
-            // branch compares against the bound expressed in its own epoch. Dropping a branch
-            // would silently lose every row stored in the other one.
-            func branch(_ threshold: String, _ lower: Double?, _ upper: Double?) -> String {
-                var parts = ["\(column) \(threshold) 1000000000"]
-                if let lower { parts.append("\(column) >= \(lower)") }
-                if let upper { parts.append("\(column) <= \(upper)") }
-                return "(" + parts.joined(separator: " AND ") + ")"
+            let normalized = Self.normalizedDateSQL("messages.\(Self.quoted(date))")
+            if request.sinceHours > 0 {
+                let cutoff = Date().addingTimeInterval(-Double(request.sinceHours) * 3_600)
+                predicates.append("(\(normalized)) >= \(cutoff.timeIntervalSince1970)")
             }
-            let epochBranch = branch(">", request.dateFrom?.timeIntervalSince1970,
-                                      request.dateTo?.timeIntervalSince1970)
-            let refBranch   = branch("<=", request.dateFrom?.timeIntervalSinceReferenceDate,
-                                     request.dateTo?.timeIntervalSinceReferenceDate)
-            predicates.append("(\(epochBranch) OR \(refBranch))")
-            // Literals, not bindings: these are server-computed Doubles, no character of the user
-            // input reaches the SQL. Binding them as text would compare TEXT against a numeric
-            // column and match nothing.
+            if let from = request.dateFrom {
+                predicates.append("(\(normalized)) >= \(from.timeIntervalSince1970)")
+            }
+            if let exclusive = request.dateToExclusive {
+                predicates.append("(\(normalized)) < \(exclusive.timeIntervalSince1970)")
+            } else if let to = request.dateTo {
+                predicates.append("(\(normalized)) <= \(to.timeIntervalSince1970)")
+            }
+            // Only bounded, parsed, finite dates become numeric SQL literals; user text
+            // never enters SQL. Text bindings would change expression comparison affinity.
         }
 
         if let mailboxIDs, let mailbox = schema.mailbox {
@@ -1443,7 +1475,8 @@ final class MailProvider {
         sql += clause.sql
         // ROWID breaks ties. Without it two messages sharing a timestamp can swap places between two
         // pages, so a paged walk both repeats and misses rows.
-        sql += " ORDER BY \(dateExpr ?? "messages.ROWID") DESC, messages.ROWID DESC LIMIT ? OFFSET ?"
+        let sortDate = dateExpr.map(Self.normalizedDateSQL) ?? "messages.ROWID"
+        sql += " ORDER BY \(sortDate) DESC, messages.ROWID DESC LIMIT ? OFFSET ?"
 
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -1774,7 +1807,8 @@ final class MailProvider {
         mailboxes: [String: MailboxRow],
         fieldsMatched: [String],
         recipients: String?,
-        bodySnippet: String?
+        bodySnippet: MailBody?,
+        includeBodyPreview: Bool = true
     ) -> DataItem {
         var metadata: [String: String] = ["sender": row.sender]
 
@@ -1810,8 +1844,14 @@ final class MailProvider {
         }
 
         var preview: String?
-        if let bodySnippet, !bodySnippet.isEmpty {
-            preview = String(bodySnippet.prefix(400))
+        if let bodySnippet {
+            metadata.merge(bodySnippet.metadata) { _, new in new }
+            if includeBodyPreview && bodySnippet.status != "unavailable" {
+                preview = String(bodySnippet.body.prefix(400))
+                metadata["body_truncated"] = String(bodySnippet.truncated || bodySnippet.body.count > 400)
+            }
+        } else {
+            metadata["body_status"] = "not_requested"
         }
 
         return DataItem(
@@ -1830,14 +1870,49 @@ final class MailProvider {
         mailboxes: [String: MailboxRow],
         mailRoot: URL,
         database: OpaquePointer
-    ) throws -> String {
+    ) throws -> MailBody {
         try checkCancellation(.bodyCandidate)
-        guard let mailboxID = row.mailboxID, let box = mailboxes[mailboxID] else { return "" }
-        guard let url = emlxURL(mailboxURL: box.url, mailRoot: mailRoot, messageROWID: row.id) else { return "" }
-        return try parseEmlx(at: url).body
+        guard let mailboxID = row.mailboxID, let box = mailboxes[mailboxID] else {
+            return .unavailable("mailbox_unavailable")
+        }
+        guard let url = emlxURL(mailboxURL: box.url, mailRoot: mailRoot, messageROWID: row.id) else {
+            return .unavailable("emlx_not_found")
+        }
+        return try parseEmlx(at: url)
     }
 
     // MARK: - Models
+
+    private struct MailBody {
+        let body: String
+        let to: String
+        let status: String
+        let reason: String
+        var truncated = false
+
+        init(body: String, to: String, truncated: Bool = false) {
+            self.body = body
+            self.to = to
+            self.status = body.isEmpty ? "empty" : "available"
+            self.reason = body.isEmpty ? "no_text_extracted" : ""
+            self.truncated = truncated
+        }
+
+        private init(reason: String) {
+            body = ""
+            to = ""
+            status = "unavailable"
+            self.reason = reason
+        }
+
+        static func unavailable(_ reason: String) -> MailBody { MailBody(reason: reason) }
+
+        var metadata: [String: String] {
+            ["body_status": status, "body_reason": reason,
+             "body_source": status == "unavailable" ? "none" : "emlx",
+             "body_truncated": String(truncated)]
+        }
+    }
 
     private struct MailDetail {
         let id: String
@@ -1851,7 +1926,7 @@ final class MailProvider {
         let isRead: Bool?
         let isFlagged: Bool?
         let flagColorCode: Int?
-        let body: String
+        let body: MailBody
         var mailbox: String?
         var mailboxRole: String?
     }
@@ -1990,17 +2065,23 @@ final class MailProvider {
             metadata["mailbox_role"] = role
         }
 
+        metadata.merge(detail.body.metadata) { _, new in new }
         let item = DataItem(
             id: detail.id,
             title: detail.subject.isEmpty ? "(no subject)" : detail.subject,
             subtitle: detail.sender,
             kind: "mail_message",
             source: sourceName,
-            preview: detail.body,
+            preview: detail.body.status == "unavailable" ? nil : detail.body.body,
             metadata: metadata
         )
         try checkCancellation(.responseItem)
-        let response = ToolResponse(ok: true, source: item.source, items: [item])
+        let response = ToolResponse(
+            ok: true, source: item.source, items: [item],
+            message: detail.body.status == "unavailable"
+                ? "Message metadata is available, but the local body is unavailable (\(detail.body.reason)). Exchange and other accounts may not store .emlx files locally; do not interpret this as an empty message."
+                : nil
+        )
         guard let encoded = try? M3JSON.makeEncoder().encode(response),
               encoded.count <= Self.maximumEncodedCollectionResponseBytes else {
             return ToolResponse(
@@ -2067,19 +2148,19 @@ final class MailProvider {
         let flagColorCode = intValue(statement, column: 8).map(MailFlagColor.code(fromFlags:))
         let mailboxID = try textValue(statement, column: 6, field: "messages.mailbox")
 
-        var body = ""
+        var body: MailBody?
         var recipients = ""
 
         if let mailboxID, let box = mailboxes[mailboxID],
            let emlxURL = emlxURL(mailboxURL: box.url, mailRoot: mailRoot, messageROWID: rowID) {
             let parsed = try parseEmlx(at: emlxURL)
-            body = parsed.body
+            body = parsed
             recipients = parsed.to
         }
 
-        if body.isEmpty, let found = try findEmlxBySearch(mailRoot: mailRoot, messageROWID: rowID) {
+        if body == nil, let found = try findEmlxBySearch(mailRoot: mailRoot, messageROWID: rowID) {
             let parsed = try parseEmlx(at: found)
-            body = parsed.body
+            body = parsed
             if recipients.isEmpty { recipients = parsed.to }
         }
 
@@ -2107,7 +2188,7 @@ final class MailProvider {
             isRead: isRead,
             isFlagged: isFlagged,
             flagColorCode: flagColorCode,
-            body: body.isEmpty ? "(body not available — .emlx file not found)" : body,
+            body: body ?? .unavailable("emlx_not_found"),
             mailbox: box.map { $0.path.isEmpty ? $0.name : $0.path },
             mailboxRole: box?.role
         )
@@ -2248,10 +2329,10 @@ final class MailProvider {
 
     // MARK: - .emlx parsing
 
-    private func parseEmlx(at url: URL) throws -> (body: String, to: String) {
+    private func parseEmlx(at url: URL) throws -> MailBody {
         try checkCancellation(.bodyParsing)
         guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return ("", "")
+            return .unavailable("emlx_unreadable")
         }
         defer { try? handle.close() }
 
@@ -2259,7 +2340,7 @@ final class MailProvider {
         do {
             data = try handle.read(upToCount: Self.maximumEmlxBytes + 1) ?? Data()
         } catch {
-            return ("", "")
+            return .unavailable("emlx_unreadable")
         }
         try checkCancellation(.bodyParsing)
 
@@ -2269,7 +2350,7 @@ final class MailProvider {
         try checkCancellation(.bodyParsing)
 
         guard let firstNewline = content.firstIndex(of: "\n") else {
-            return ("", "")
+            return .unavailable("invalid_emlx")
         }
 
         let emailStart = content.index(after: firstNewline)
@@ -2280,6 +2361,9 @@ final class MailProvider {
             emailPart = String(content[emailStart...])
         }
 
+        guard emailPart.contains("\r\n\r\n") || emailPart.contains("\n\n") else {
+            return .unavailable("invalid_emlx")
+        }
         let to = try extractHeader(emailPart, name: "To")
         let body = try extractBody(emailPart, depth: 0)
         var truncated = body.count > 8_000 ? String(body.prefix(8_000)) + "\n[truncated]" : body
@@ -2288,7 +2372,7 @@ final class MailProvider {
                 ? "[message exceeds the safe read limit]"
                 : "\n[source truncated at \(Self.maximumEmlxBytes) bytes]"
         }
-        return (truncated, to)
+        return MailBody(body: truncated, to: to, truncated: sourceWasTruncated || body.count > 8_000)
     }
 
     private func extractHeader(_ email: String, name: String) throws -> String {
@@ -2773,6 +2857,12 @@ final class MailProvider {
             return nil
         }
         return Int(sqlite3_column_int64(statement, column))
+    }
+
+    /// Keep the legacy Mail epoch interpretation consistent before LIMIT/OFFSET as well
+    /// as when displaying timestamps. The source does not label individual rows' epochs.
+    private static func normalizedDateSQL(_ column: String) -> String {
+        "CASE WHEN \(column) > 1000000000 THEN \(column) WHEN \(column) > 0 THEN \(column) + 978307200 ELSE NULL END"
     }
 
     private func dateValue(_ statement: OpaquePointer, column: Int32) -> Date? {

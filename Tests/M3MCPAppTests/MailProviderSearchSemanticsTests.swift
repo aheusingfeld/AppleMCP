@@ -95,6 +95,27 @@ final class MailProviderSearchSemanticsTests: XCTestCase {
         XCTAssertEqual(second.items.map(\.id), ["8"])
     }
 
+    func testNamedPeriodIncludesSubMillisecondTailButNotNextPeriod() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let end = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1))!
+        try fixture.setDate(end.addingTimeInterval(-0.0001).timeIntervalSince1970, id: 14)
+        try fixture.setDate(end.timeIntervalSince1970, id: 15)
+        let response = await search(["query": .string("memo"), "date_from": .string("2025"), "date_to": .string("2025")])
+        XCTAssertEqual(response.items.map(\.id), ["14", "13"])
+        XCTAssertNotNil(response.meta?["date_to_exclusive"])
+    }
+
+    func testDayBoundsRespectDaylightSavingTransition() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Berlin")!
+        for (day, hours) in [("2025-03-30", 23.0), ("2025-10-26", 25.0)] {
+            let start = try XCTUnwrap(MailProvider.MailDateBound.parse(day, edge: .start, calendar: calendar).instant)
+            let end = try XCTUnwrap(MailProvider.MailDateBound.parse(day, edge: .end, calendar: calendar).instant)
+            XCTAssertEqual(end.timeIntervalSince(start), hours * 3600 - 0.001, accuracy: 0.0001)
+        }
+    }
+
     func testDateBoundsUseGregorianYearsDespiteUserCalendar() throws {
         var buddhist = Calendar(identifier: .buddhist)
         buddhist.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -224,7 +245,8 @@ final class MailProviderSearchSemanticsTests: XCTestCase {
         ])
         XCTAssertEqual(response.items.map(\.id), ["3"])
         XCTAssertEqual(response.items.first?.metadata["fields_matched"], "body")
-        XCTAssertEqual(response.meta?["total_exact"], "true")
+        // Other candidates lack local bodies: this confirmed hit is only a lower bound.
+        XCTAssertEqual(response.meta?["total_exact"], "false")
     }
 
     func testFieldsOutsideTheDocumentedFourAreRefused() async {
@@ -811,6 +833,14 @@ private final class MailFixture {
         }
         defer { sqlite3_close(database) }
         try Self.populate(database, withFlagColumns: withFlagColumns, withDateColumn: withDateColumn)
+    }
+
+    func setDate(_ seconds: Double, id: Int) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open(root.appendingPathComponent("V10/MailData/Envelope Index").path, &database) == SQLITE_OK,
+              let database else { throw Self.error("Cannot open fixture") }
+        defer { sqlite3_close(database) }
+        try Self.execute("UPDATE messages SET date_received = \(seconds) WHERE ROWID = \(id)", on: database)
     }
 
     func writeBody(_ body: String, id: String) throws {

@@ -1,6 +1,6 @@
 # LocalMCP
 
-Version 1.0.2: German and English macOS app; security and SwiftUI updates prepared for App Store review. Apple has approved version 1.0.1 (build 19).
+Version 1.0.3 (build 23) is prepared in source for the next update: reliable Mail body status and absolute date searches. Version 1.0.2 (22) remains submitted for App Store review; Apple has approved 1.0.1 (19).
 
 <img src="assets/branding/localmcp-icon.png" width="128" height="128" alt="LocalMCP app icon">
 
@@ -382,11 +382,52 @@ treat this documentation and the provider mapping as stale.
 - `meta.date_from_applied` and `meta.date_to_applied` report the instants the inputs
   actually resolved to, including the zone, so the end-of-day rule is visible.
 
-Known quirk of the data source, not fixable here: the Envelope Index sorts by the raw date
-column value, which mixes Unix epoch seconds and Core Data reference-date seconds. With
-mixed encodings in one result, reference-dated rows sort after epoch-dated rows regardless
-of their true time. The date range filter itself handles both encodings with separate SQL
-branches.
+Filtering and sorting now normalize dates **before pagination** using the same inherited
+heuristic as displayed timestamps: positive values above 1,000,000,000 are Unix seconds;
+smaller positive values are Core Data reference seconds. `meta.date_encoding` identifies
+this heuristic. The index does not label each value's epoch, so dates outside the overlapping
+modern ranges (for example Unix dates before September 2001 or reference dates after
+September 2032) can still be ambiguous. Accepting query years 1970–2100 is not a guarantee
+that every historical/future source timestamp can be classified correctly.
+
+Dates use the Gregorian calendar even when macOS displays another calendar. Full timestamps
+accept `YYYY-MM-DDTHH:mm:ss`, optional 1–9 fractional digits, and optional `Z` or `±HH:mm`.
+Malformed timestamps and nonexistent local times during a DST jump are rejected. An ambiguous
+local time during the autumn clock change follows Foundation Calendar's resolution; supply an
+explicit offset when the exact occurrence matters. Named periods are compared with the exclusive
+start of the next period, so fractions below one millisecond are included too.
+`meta.date_to_exclusive` reports that boundary; it is empty for an inclusive full timestamp.
+
+### Mail body availability (including Exchange)
+
+`mail_read`, and `mail_search` when reading or matching bodies, report per-item metadata:
+
+- `body_status`: `available` means extracted text; `empty` means a readable local source yielded
+  no text; `unavailable` means no usable local source; `not_requested` means not inspected.
+- `body_reason`: `emlx_not_found`, `mailbox_unavailable`, `emlx_unreadable`, `invalid_emlx`,
+  or `no_text_extracted`; empty for available text.
+- `body_source`: `emlx` or `none` when inspected.
+- `body_truncated`: whether the extraction/read bound or returned preview limit was reached.
+
+An unavailable body has no preview; an error message is never substituted for email text.
+`empty` describes extracted local text, not proof that the original message has no content.
+Exchange and other accounts may have text in Mail.app without an accessible local `.emlx`.
+LocalMCP does not launch Mail.app or use an AppleScript fallback, and this update adds no
+permissions or Mail Automation entitlement.
+
+Search metadata includes `bodies_checked`, `bodies_unavailable`, `bodies_truncated` and
+`body_coverage_complete` (`true`, `false`, or `not_requested`). Coverage describes inspected
+sources, not whether a 400-character preview is the complete message. Counts cover the inspected
+candidate window for body matching, or the fetched page for `include_body`; inspect `has_more`
+and `scan_capped` too. Missing/truncated bodies make a body-dependent search's `total_exact`
+false: zero hits cannot establish that no matching messages exist. Metadata-only matching retains
+an exact count even if an optional body preview is unavailable. Clients should disclose these
+limits before assessing urgency or summarizing messages.
+
+**Deutsch:** Fehlt bei Exchange die lokale Nachrichtendatei, meldet LocalMCP den Text als
+nicht verfügbar. Das ist keine leere E-Mail. Bei einer unvollständigen Textsuche sind Trefferzahlen
+nur Untergrenzen. Ein direkter Zugriff über Mail-Automation bleibt einem separat geprüften Update
+vorbehalten.
 
 ## Optional tool groups
 
