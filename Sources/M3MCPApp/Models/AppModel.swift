@@ -1,40 +1,42 @@
 import AppKit
 import Foundation
+import Observation
 import M3MCPCore
 import Security
 
 @MainActor
-final class AppModel: ObservableObject {
-    @Published private(set) var services: [ServiceHealth] = []
-    @Published private(set) var activity: [ActivityEntry] = []
-    @Published private(set) var permissionItems: [DataItem] = []
-    @Published private(set) var permissionMessage: String?
-    @Published private(set) var serverState = "stopped"
-    @Published private(set) var authenticationSummary = "not started"
-    @Published var selectedServiceName: String?
+@Observable
+final class AppModel {
+    private(set) var services: [ServiceHealth] = []
+    private(set) var activity: [ActivityEntry] = []
+    private(set) var permissionItems: [DataItem] = []
+    private(set) var permissionMessage: String?
+    private(set) var serverState = "stopped"
+    private(set) var authenticationSummary = "not started"
+    var selectedServiceName: String?
 
-    @Published var destination: AppDestination = .overview
-    @Published var showsSetup = false
-    @Published private(set) var usageRiskAccepted: Bool
+    var destination: AppDestination = .overview
+    var showsSetup = false
+    private(set) var usageRiskAccepted: Bool
     private let preferences: UserDefaults
     private static let usageRiskVersion = 2
     private static let usageRiskKey = "m3mcp.setup.usageRisk.acceptedVersion"
-    @Published private(set) var copyMessage: String?
-    @Published private(set) var checkingConnection = false
-    @Published private(set) var connectionVerified: Bool?
-    @Published private(set) var connectionMessage: String?
-    @Published private(set) var permissionBusy = false
-    @Published private(set) var permissionProgress: String?
-    @Published private(set) var permissionSequenceRunning = false
-    private var stopPermissionSequence = false
+    private(set) var copyMessage: String?
+    private(set) var checkingConnection = false
+    private(set) var connectionVerified: Bool?
+    private(set) var connectionMessage: String?
+    private(set) var permissionBusy = false
+    private(set) var permissionProgress: String?
+    private(set) var permissionSequenceRunning = false
+    @ObservationIgnored private var stopPermissionSequence = false
     private let nativePermissions = PermissionProvider()
-    private var permissionPresentation = NativePermissionPresentation()
-    private var permissionRefreshGeneration = UUID()
+    @ObservationIgnored private var permissionPresentation = NativePermissionPresentation()
+    @ObservationIgnored private var permissionRefreshGeneration = UUID()
     var permissionRestartRequired: Bool {
         permissionItems.contains { $0.metadata["restart_required"] == "true" }
     }
-    private var clipboardCleanup: Task<Void, Never>?
-    private var connectionGeneration = UUID()
+    @ObservationIgnored private var clipboardCleanup: Task<Void, Never>?
+    @ObservationIgnored private var connectionGeneration = UUID()
 
     var hasCapabilityToken: Bool { capabilityToken != nil }
     var tokenForDisplay: String { capabilityToken ?? "" }
@@ -61,7 +63,7 @@ final class AppModel: ObservableObject {
     private let approvalCoordinator: NativeToolApprovalCoordinator
     private let service: LocalMCPService
     private let startupCleanupTask = AppStartupCleanupTask()
-    private var server: LocalHTTPServer?
+    @ObservationIgnored private var server: LocalHTTPServer?
 
     /// Held so the Server menu can put it on the pasteboard. It never goes into an activity entry,
     /// into `/health`, or into a log line.

@@ -2,7 +2,7 @@ import M3MCPCore
 import SwiftUI
 
 struct ContentView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     @AppStorage("m3mcp.setup.v1.completed") private var setupCompleted = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -40,7 +40,7 @@ struct ContentView: View {
 }
 
 private struct DestinationView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             switch model.destination {
@@ -55,7 +55,7 @@ private struct DestinationView: View {
 }
 
 private struct AppHeader: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     var body: some View {
         HStack(spacing: 12) {
             StatusPill(text: model.serverState == "running" ? "Server läuft" : "Server nicht aktiv",

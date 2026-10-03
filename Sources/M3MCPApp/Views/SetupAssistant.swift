@@ -14,7 +14,7 @@ enum SetupStep: Int, CaseIterable, Identifiable {
 }
 
 struct SetupAssistant: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     let completed: () -> Void
     @AppStorage("m3mcp.setup.v1.step") private var step: SetupStep = .welcome
     @State private var showsRiskNotice = false
