@@ -16,13 +16,13 @@ Die App und ihre Bridge deklarieren noch keine `com.apple.security.hardened-proc
 
 Der untersuchte Transport enthält bereits begrenzte offene und aktive Verbindungen, Größenlimits, monotone Lese-/Schreibfristen, Token- und Peer-Prüfung sowie Abbruchbehandlung. Das Aktivitätsprotokoll begrenzt Einträge auf 100 und Ein-/Ausgabedarstellungen auf jeweils 8.000 Zeichen. Die Prüfung dieser Kontrollen ist kein vollständiger Penetrationstest.
 
-## Zur Freigabe: Enhanced Security
+## Freigegeben am 3. Oktober 2026: Enhanced Security
 
-- [ ] In der maßgeblichen XcodeGen-Datei `xcode/project.yml` projektweit `ENABLE_ENHANCED_SECURITY = YES` aktivieren und das Projekt neu generieren. Danach tatsächlich ausgewertete Einstellungen aller betroffenen Targets prüfen.
-- [ ] Für LocalMCP und M3MCPBridge die erforderlichen v2-Entitlements und die standardmäßig aktiven Optionen ergänzen: `hardened-process`, `enhanced-security-version-string = 2`, `hardened-heap`, `dyld-ro`, `platform-restrictions-string = 2`.
-- [ ] Den SandboxTransportProbe entsprechend härten, damit der reale App-/Bridge-Transport unter denselben Schutzmechanismen getestet werden kann.
-- [ ] M3MCPCore als statische Bibliothek ohne eigene Prozess-Entitlements behandeln; die durch Enhanced Security erzeugten Architekturen und das Zusammenspiel von App und Bridge überprüfen.
-- [ ] Keine iOS/watchOS-spezifische Checked-Pointer-Arithmetic-Slice und kein Hardware Memory Tagging für diese macOS-App aktivieren.
+- [x] In der maßgeblichen XcodeGen-Datei `xcode/project.yml` projektweit `ENABLE_ENHANCED_SECURITY = YES` aktivieren und das Projekt neu generieren. Danach tatsächlich ausgewertete Einstellungen aller betroffenen Targets prüfen.
+- [x] Für LocalMCP und M3MCPBridge die erforderlichen v2-Entitlements und die standardmäßig aktiven Optionen ergänzen: `hardened-process`, `enhanced-security-version-string = 2`, `hardened-heap`, `dyld-ro`, `platform-restrictions-string = 2`.
+- [x] Den SandboxTransportProbe entsprechend härten, damit der reale App-/Bridge-Transport unter denselben Schutzmechanismen getestet werden kann.
+- [x] M3MCPCore als statische Bibliothek ohne eigene Prozess-Entitlements behandeln; die durch Enhanced Security erzeugten Architekturen und das Zusammenspiel von App und Bridge überprüfen.
+- [x] Keine iOS/watchOS-spezifische Checked-Pointer-Arithmetic-Slice und kein Hardware Memory Tagging für diese macOS-App aktivieren.
 - [ ] Universal-Release-Build, vollständige Tests und ThreadSanitizer ausführen. Anschließend signierten nativen Sandbox-Transport, Keychain-Start/Neustart, Verbindungsprüfung, Datenquellen und Apple Events auf realem Mac überprüfen. Keine realen Tokens löschen, ACLs lockern oder Datenschutzfreigaben zurücksetzen.
 - [ ] Nur nach diesen Laufzeitprüfungen einen neuen Release-Build und eine App-Store-Einreichung vorbereiten. Compilererfolg allein bestätigt diese Runtime-Schutzmechanismen nicht.
 
@@ -39,3 +39,15 @@ Der Release-Build meldet in `CapabilityToken.swift` die veraltete Konstante `kSe
 In dieser Sitzung sind keine Xcode-MCP-Projektwerkzeuge verfügbar; das Einstellungs-Audit verwendet deshalb `xcodebuild -showBuildSettings` und die XcodeGen-Quellen. Export und CLI funktionieren; die erste Exportmeldung über ein beschädigtes Xcode wurde durch den erfolgreichen erneuten Export widerlegt. Die bestehenden persönlichen Skill-Dateien stimmen mit den frisch exportierten beiden angewendeten Skills überein.
 
 Die App-Store-Einreichung und ihre manuelle Veröffentlichung werden durch diese lokale Qualitätsprüfung nicht verändert. Ein TestFlight-Upload oder Apple-Approval wird nicht aus lokalen Tests abgeleitet.
+
+## Ergebnis der Umsetzung
+
+Enhanced Security ist projektweit in der XcodeGen-Quelle aktiviert. App, Bridge und SandboxTransportProbe tragen die fünf freigegebenen v2-Entitlements. Die signierten Entwicklungsprofile wurden durch Xcode aktualisiert. Die tatsächlichen Einstellungen von LocalMCP, M3MCPBridge und M3MCPCore bestätigen Enhanced Security, Pointer Authentication und Security Compiler Warnings. `lipo` bestätigt arm64, x86_64 und arm64e für die Release-App und die Core-Bibliothek. Keine expliziten bisherigen Opt-outs wurden überschrieben.
+
+408 Tests unter ThreadSanitizer: vier opt-in-Kalendertests übersprungen, keine Fehler und keine gemeldeten Datenrennen. Universal-Release-Build, signierte Release-App, signierter SandboxTransportProbe und strenge tiefe Signaturprüfung erfolgreich. Dokumentations- und DE/EN-Lokalisierungsprüfungen erfolgreich.
+
+Auf dem realen Mac bestätigt der signierte SandboxTransportProbe: eingebettete Bridge mit korrektem synthetischem Token akzeptiert; dieselbe Bridge mit falschem Token abgewiesen; fremder Prozess trotz korrektem Token abgewiesen; Socket 0600 und Elternordner 0700. Der erste Testaufruf mit einer Bridge außerhalb des Pakets scheiterte am Sandbox-Dateizugriff; der korrekte Aufruf mit der eingebetteten Bridge besteht.
+
+Die signierte Haupt-App startet und verbindet sich auch nach Prozessneustart erfolgreich mit ihrer echten eingebetteten Bridge. Der Test verwendet ein synthetisches Token, einen eigenen Socket-Unterordner sowie nur prozesslokale Setup-Argumente. Er bestätigt weder reale Keychain-Kontinuität noch persönliche Datenquellen oder Apple Events. macOS schützt die Test-Diagnosedateien im App-Group-Container vor dem externen Python-Treiber; kleine isolierte Test-Unterordner bleiben deshalb erhalten. Keine realen Tokens oder Freigaben wurden geändert.
+
+Ausstehendes Veröffentlichungstor: native Prüfung der realen Keychain-Zugriffe, Datenquellen und Apple Events; bisherige Zustimmung zu anderen Builds ersetzt diese Prüfung nicht. Die Store-Einreichung bleibt davon unabhängig.
