@@ -29,6 +29,13 @@
   minutes to be indexed, and gray flags on Exchange accounts can read as red because
   Exchange follow-up flags have no gray.
 
+## 1.0.2 — 2026-10-03
+
+- Enable Apple Enhanced Security v2 for the native app and embedded MCP bridge.
+- Use Swift Observation to update views only when their observed model properties change.
+- Include read-only Mail flag metadata and flag filters.
+- Prepare build 22 as an update after Apple approved version 1.0.1 (19).
+
 ## 1.0.1 — 2026-09-13
 
 - Prepare the German and English Mac App Store release using Xcode 27 RC.

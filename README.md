@@ -1,6 +1,6 @@
 # LocalMCP
 
-Version 1.0.1: German and English macOS app; App Store review preparation is in progress.
+Version 1.0.2: German and English macOS app; security and SwiftUI updates prepared for App Store review. Apple has approved version 1.0.1 (build 19).
 
 <img src="assets/branding/localmcp-icon.png" width="128" height="128" alt="LocalMCP app icon">
 
