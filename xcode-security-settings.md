@@ -25,7 +25,7 @@ The probe shares the app entitlement file. M3MCPCore is a static library and rec
 
 ## Deferred
 
-- Real Keychain, personal data provider and Apple Events acceptance with the hardened signed app. These are required before publishing a replacement release.
+- Physical Intel/older macOS acceptance and a full process-relaunch Keychain comparison were not performed. Native server stop/start and bounded provider checks on this Mac are documented below.
 - Instruments measurements for UI responsiveness under large responses. Observation behavior is tested; numerical performance gains have not been measured.
 - Migration away from deprecated `kSecUseAuthenticationUIFail`: requires native tests preserving noninteractive startup and deliberately interactive access.
 
@@ -34,3 +34,11 @@ The probe shares the app entitlement file. M3MCPCore is a static library and rec
 Full Swift suite with ThreadSanitizer: 408 tests, four opt-in calendar skips, zero failures and no sanitizer race reports. Unsigned Universal Release, signed main app and signed transport fixture builds pass. Strict deep signatures pass. Physical-Mac transport checks accept the valid embedded bridge and reject a wrong token and a foreign executable. Signed main-app start/restart and bridge authentication pass with isolated synthetic credentials. These tests do not establish real Keychain continuity, data-source permissions or Apple approval.
 
 Detailed evidence and remaining release gates are retained in `xcode-security-audit-plan.md`.
+
+## Native acceptance on 3 October 2026
+
+After the user personally accepted setup and explicitly authorized a server restart, the signed hardened app transitioned from running to stopped and back to running. The masked credential became available again, and a fresh embedded-bridge authentication check passed without a Keychain prompt or error. This verifies credential usability after a server restart, not bytewise token identity or a separate process relaunch. No token was revealed, copied, deleted or reset.
+
+Bounded read-only native checks passed for Calendar, Contacts, Reminders, Notes and Photos. The Notes implementation uses AppleScriptRunner, so its successful probe exercises the Notes Apple Events path. The first Photos check was delayed roughly 30–40 seconds while navigation remained responsive; a second attempt passed. Real Mail and Voice Memos reads were not repeated because those pages do not expose the same native probe. Zero-result probes confirm successful execution, not the presence of data.
+
+Apple approved 1.0.1 (19). The hardened update is therefore version 1.0.2 (22), with manual publication selected in App Store Connect. Upload, processing and review submission remain separate external evidence.
