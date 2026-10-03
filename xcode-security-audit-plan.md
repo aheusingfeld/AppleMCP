@@ -8,7 +8,7 @@ Stand: 3. Oktober 2026. Quelle: die mit Xcode 27.0 (27A266a) exportierten Apple-
 
 Zwei Verhaltenstests prüfen, dass eine Zustimmung die zustimmungsabhängige Ansicht aktualisiert und die Ansicht des unveränderten Serverstatus nicht invalidiert. Die bestehenden Zustimmungs-, Berechtigungs-, Abbruch- und Servertests werden zusätzlich ausgeführt. Das ist ein Nachweis der Beobachtungsgranularität, keine gemessene Aussage über Bildrate oder CPU-Verbrauch.
 
-## Sicherheitsstand
+## Ausgangsstand vor der Härtung
 
 Die ausgewerteten Release-Build-Einstellungen von `LocalMCP` bestätigen `ENABLE_HARDENED_RUNTIME = YES`, `ENABLE_APP_SANDBOX = YES`, `ARCHS = arm64 x86_64`, `SWIFT_OPTIMIZATION_LEVEL = -O` und `ENABLE_ENHANCED_SECURITY = NO`. Pointer Authentication und Security Compiler Warnings stehen ebenfalls auf NO. Ausgewertete Standardwerte sind keine absichtlichen Opt-outs: Die XcodeGen-Quelldatei setzt diese NO-Werte nicht ausdrücklich.
 
@@ -50,4 +50,10 @@ Auf dem realen Mac bestätigt der signierte SandboxTransportProbe: eingebettete 
 
 Die signierte Haupt-App startet und verbindet sich auch nach Prozessneustart erfolgreich mit ihrer echten eingebetteten Bridge. Der Test verwendet ein synthetisches Token, einen eigenen Socket-Unterordner sowie nur prozesslokale Setup-Argumente. Er bestätigt weder reale Keychain-Kontinuität noch persönliche Datenquellen oder Apple Events. macOS schützt die Test-Diagnosedateien im App-Group-Container vor dem externen Python-Treiber; kleine isolierte Test-Unterordner bleiben deshalb erhalten. Keine realen Tokens oder Freigaben wurden geändert.
 
-Ausstehendes Veröffentlichungstor: native Prüfung der realen Keychain-Zugriffe, Datenquellen und Apple Events; bisherige Zustimmung zu anderen Builds ersetzt diese Prüfung nicht. Die Store-Einreichung bleibt davon unabhängig.
+Ausstehendes Veröffentlichungstor: native Prüfung der realen Keychain-Zugriffe, Datenquellen und Apple Events; bisherige Zustimmung zu anderen Builds ersetzt diese Prüfung nicht. Vor einem Upload beziehungsweise einer neuen Store-Einreichung bleibt dieses Tor zu schließen.
+
+## Native Oberflächenprüfung und Release-Vorbereitung
+
+Die signierte gehärtete App wurde am 3. Oktober 2026 ohne Demo- oder Testargumente gestartet. Übersicht, Freigaben und der deutsche MCP-/Risikodialog sind bedienbar; der vollständige Dialog ist lesbar und scrollbar. Abbrechen und erneutes Öffnen funktionieren. Die Oberfläche zeigt acht freigegebene Datenquellen; diese Anzeige allein bestätigt keinen erfolgreichen Datenzugriff. Die Zugriffsprüfung bei gestopptem Server zeigt erwartungsgemäß den Hinweis, zuerst den Server zu starten.
+
+Die persönliche Zustimmung steht in dieser Installation noch aus. Der Serverstart wurde nicht ausgeführt. Keychain-Kontinuität und echte Provider-Aufrufe bleiben daher offen. Build 21 wird als Release-Kandidat vorbereitet; ein lokales Archiv ist weder ein Upload noch eine Freigabe dieser ausstehenden Prüfungen.
