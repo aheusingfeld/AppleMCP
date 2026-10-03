@@ -38,6 +38,90 @@ final class MailProviderSearchSemanticsTests: XCTestCase {
         return await fixture.withMailRoot { await MailProvider().search(input: input) }
     }
 
+    // Next-update regressions: fixture data only, no real mailbox access.
+    func testBodyReadDistinguishesMissingEmptyMalformedAndAvailable() async throws {
+        try fixture.writeBody("", id: "2")
+        try fixture.writeRawEmlx("not an emlx file", id: "4")
+        for (id, status, reason) in [("1", "unavailable", "emlx_not_found"),
+                                     ("2", "empty", "no_text_extracted"),
+                                     ("3", "available", ""),
+                                     ("4", "unavailable", "invalid_emlx")] {
+            let response = await fixture.withMailRoot {
+                await MailProvider().read(input: ["id": .string(id)])
+            }
+            XCTAssertTrue(response.ok, response.message ?? "")
+            XCTAssertEqual(response.items.first?.metadata["body_status"], status, id)
+            XCTAssertEqual(response.items.first?.metadata["body_reason"], reason, id)
+            if status == "unavailable" {
+                XCTAssertNil(response.items.first?.preview, "Never put an error string in message content")
+                XCTAssertNotNil(response.message)
+            }
+            if status == "empty" { XCTAssertEqual(response.items.first?.preview, "") }
+        }
+    }
+
+    func testSearchBodyCoverageDisclosesMissingFilesWithoutLosingMetadata() async throws {
+        try fixture.writeBody("", id: "2")
+        let response = await search(["include_body": .bool(true)])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertEqual(response.items.first { $0.id == "1" }?.metadata["body_status"], "unavailable")
+        XCTAssertEqual(response.items.first { $0.id == "2" }?.metadata["body_status"], "empty")
+        XCTAssertEqual(response.items.first { $0.id == "3" }?.metadata["body_status"], "available")
+        XCTAssertEqual(response.meta?["body_coverage_complete"], "false")
+        XCTAssertGreaterThan(Int(response.meta?["bodies_unavailable"] ?? "0") ?? 0, 0)
+        XCTAssertEqual(response.meta?["total_exact"], "true", "Metadata-only matching still has an exact count")
+    }
+
+    func testBodyOnlySearchCannotClaimAnExactNegativeWhenBodiesAreMissing() async {
+        let response = await search(["query": .string("nonexistentneedle"), "fields": .array([.string("body")])])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertTrue(response.items.isEmpty)
+        XCTAssertEqual(response.meta?["body_coverage_complete"], "false")
+        XCTAssertEqual(response.meta?["total_exact"], "false")
+        XCTAssertTrue(response.message?.contains("unavailable") == true)
+    }
+
+    func testMetadataOnlySearchDoesNotClaimBodiesWereChecked() async {
+        let response = await search([:])
+        XCTAssertEqual(response.meta?["bodies_checked"], "0")
+        XCTAssertEqual(response.meta?["body_coverage_complete"], "not_requested")
+        XCTAssertEqual(response.items.first?.metadata["body_status"], "not_requested")
+    }
+
+    func testMixedEpochOrderingHappensBeforeLimitAndOffset() async {
+        let response = await search(["query": .string("timestamp"), "limit": .number(2)])
+        XCTAssertEqual(response.items.map(\.id), ["7", "8"])
+        let second = await search(["query": .string("timestamp"), "limit": .number(1), "offset": .number(1)])
+        XCTAssertEqual(second.items.map(\.id), ["8"])
+    }
+
+    func testDateBoundsUseGregorianYearsDespiteUserCalendar() throws {
+        var buddhist = Calendar(identifier: .buddhist)
+        buddhist.timeZone = TimeZone(secondsFromGMT: 0)!
+        let date = try XCTUnwrap(MailProvider.MailDateBound.parse("2025-01-01", edge: .start, calendar: buddhist).instant)
+        XCTAssertEqual(date, ISO8601DateFormatter().date(from: "2025-01-01T00:00:00Z"))
+    }
+
+    func testInvalidFullTimestampsFailClosed() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Berlin")!
+        for text in ["2025-02-30T12:00:00Z", "2025-01-01T24:00:00Z",
+                     "2025-01-01T12:00:00Ztrailing", "2025-03-30T02:30:00",
+                     "2025-01-01T12:00:00+25:00"] {
+            XCTAssertThrowsError(try MailProvider.MailDateBound.parse(text, edge: .start, calendar: calendar), text)
+        }
+    }
+
+    func testFractionalLocalTimestampsAndExplicitOffsetsAgree() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Berlin")!
+        let local = try XCTUnwrap(MailProvider.MailDateBound.parse("2025-01-01T12:30:00.125", edge: .start, calendar: calendar).instant)
+        let zoned = try XCTUnwrap(MailProvider.MailDateBound.parse("2025-01-01T11:30:00.125Z", edge: .start, calendar: calendar).instant)
+        XCTAssertEqual(local, zoned)
+        let offset = try XCTUnwrap(MailProvider.MailDateBound.parse("2025-01-01T14:00:00.125+02:30", edge: .start, calendar: calendar).instant)
+        XCTAssertEqual(offset, zoned)
+    }
+
     // MARK: - Term semantics
 
     func testAllRequiresEveryTermAndAnyRequiresOnlyOne() async {
@@ -727,6 +811,14 @@ private final class MailFixture {
         }
         defer { sqlite3_close(database) }
         try Self.populate(database, withFlagColumns: withFlagColumns, withDateColumn: withDateColumn)
+    }
+
+    func writeBody(_ body: String, id: String) throws {
+        try Self.write(body: body, to: root.appendingPathComponent("V10/Mailboxes/Inbox/Messages/\(id).emlx"))
+    }
+
+    func writeRawEmlx(_ text: String, id: String) throws {
+        try Data(text.utf8).write(to: root.appendingPathComponent("V10/Mailboxes/Inbox/Messages/\(id).emlx"))
     }
 
     func tearDown() {
