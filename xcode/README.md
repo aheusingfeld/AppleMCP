@@ -4,7 +4,7 @@ The Xcode project builds the sandboxed macOS app and its embedded MCP bridge. Ge
 
 - Bundle ID: `de.mobilebox.LocalMCP`
 - Development team: Mobile Box, `SP73Z8JWXM`
-- Version: 1.0.1, build 14
+- Next source candidate: 1.0.3, build 23 (not uploaded)
 - Universal binary: Apple silicon and Intel; minimum macOS 15
 - German and English interface, selected automatically by macOS
 - App Sandbox and Hardened Runtime enabled
@@ -23,7 +23,7 @@ python3 script/check_localizations.py \
   ../LocalMCP.xcarchive/Products/Applications/LocalMCP-TestFlight.app
 ```
 
-The current code was archived with Xcode 27 RC (27A266a). Features requiring newer macOS releases are availability-gated. Apple determines distribution eligibility independently of a successful local build.
+Historical build 14 was archived with Xcode 27 RC (27A266a). Use the installed stable Xcode for the next candidate; generation or a successful build does not mean an archive was uploaded. Features requiring newer macOS releases are availability-gated. Apple determines distribution eligibility independently of a successful local build.
 
 Run `swift test` with the same developer toolchain. Run `Tests/Localization/check_bundle.swift` with the archived `.app` path to check native language negotiation and localized permission descriptions. The local installer and ZIP packaging scripts compile the same catalogs into the main app's resource directory.
 
@@ -39,6 +39,8 @@ The setup sequence covers eight sources and waits for each dialog. Cancellation 
 
 ## Verified scope
 
+The 1.0.3 source preparation and remaining gates are recorded in [the release record](../docs/releases/1.0.3.md). The following evidence concerns older builds and is not acceptance of build 23.
+
 Build 14: universal Release archive and strict deep signature validation passed; 391 Swift tests, four skipped, zero failures. All 298 catalog entries contain both languages with matching interpolation arguments. The build 12 interface was visually checked in English and then started normally in German; build 14 changes the version metadata. Native language negotiation and compiled permission descriptions passed checks.
 
 Earlier signed runtime checks passed synthetic Mail and Voice Memos searches, local transcription and all five local text modes. Normal native app queries passed bounded reads for Calendar, Contacts, Reminders, Notes and Photos. Relocation tests confirmed that stale folder bookmarks are rejected without expanding write access. The optional Apple cloud image dialog generated and imported a synthetic image.
@@ -47,6 +49,15 @@ Remaining acceptance includes personal-source queries from an external MCP clien
 
 ## Distribution status
 
-As of 13 September 2026, build 12 is available to the four-person internal TestFlight group. Version 1.0.1 (14) has been archived and verified with Xcode 27 RC; its upload completed successfully; Apple processing and assignment remain pending. The public app-specific privacy-policy addendum is being published by the account holder. App Store submission is not complete. The store is configured for manual release, 42 European storefronts and a one-time base price of EUR 4.99 in Germany. German and English metadata and screenshots, age rating, app privacy and authorised content-rights information are saved.
+Latest recorded delivery on 3 October 2026: version 1.0.1 (19) was approved; version 1.0.2
+(22) was submitted for review with manual release. The next source candidate is 1.0.3 (23).
+It has not been uploaded, assigned to testers, or submitted. Recheck App Store Connect before
+any delivery action; these are recorded states, not a live portal feed.
+
+Internal testing is restricted to **mark_zimmermann@mac.com**. Do not restore other internal
+testers from historical records. The existing Store configuration uses manual release, European
+storefronts including the UK and Switzerland, and a one-time German base price of EUR 4.99.
+German and English metadata/screenshots are maintained separately in App Store Connect.
+
 
 Do not overlay a new app on an old signed bundle. Use a clean staging bundle, verify its signature, preserve the previous app and then replace it. Overlay copies can retain Debug-only files and invalidate the signature.

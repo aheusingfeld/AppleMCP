@@ -38,6 +38,137 @@ final class MailProviderSearchSemanticsTests: XCTestCase {
         return await fixture.withMailRoot { await MailProvider().search(input: input) }
     }
 
+    // Next-update regressions: fixture data only, no real mailbox access.
+    func testBodyReadDistinguishesMissingEmptyMalformedAndAvailable() async throws {
+        try fixture.writeBody("", id: "2")
+        try fixture.writeRawEmlx("not an emlx file", id: "4")
+        for (id, status, reason) in [("1", "unavailable", "emlx_not_found"),
+                                     ("2", "empty", "no_text_extracted"),
+                                     ("3", "available", ""),
+                                     ("4", "unavailable", "invalid_emlx")] {
+            let response = await fixture.withMailRoot {
+                await MailProvider().read(input: ["id": .string(id)])
+            }
+            XCTAssertTrue(response.ok, response.message ?? "")
+            XCTAssertEqual(response.items.first?.metadata["body_status"], status, id)
+            XCTAssertEqual(response.items.first?.metadata["body_reason"], reason, id)
+            if status == "unavailable" {
+                XCTAssertNil(response.items.first?.preview, "Never put an error string in message content")
+                XCTAssertNotNil(response.message)
+            }
+            if status == "empty" { XCTAssertEqual(response.items.first?.preview, "") }
+        }
+    }
+
+    func testSearchBodyCoverageDisclosesMissingFilesWithoutLosingMetadata() async throws {
+        try fixture.writeBody("", id: "2")
+        let response = await search(["include_body": .bool(true)])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertEqual(response.items.first { $0.id == "1" }?.metadata["body_status"], "unavailable")
+        XCTAssertEqual(response.items.first { $0.id == "2" }?.metadata["body_status"], "empty")
+        XCTAssertEqual(response.items.first { $0.id == "3" }?.metadata["body_status"], "available")
+        XCTAssertEqual(response.meta?["body_coverage_complete"], "false")
+        XCTAssertGreaterThan(Int(response.meta?["bodies_unavailable"] ?? "0") ?? 0, 0)
+        XCTAssertEqual(response.meta?["total_exact"], "true", "Metadata-only matching still has an exact count")
+    }
+
+    func testBodyOnlySearchCannotClaimAnExactNegativeWhenBodiesAreMissing() async {
+        let response = await search(["query": .string("nonexistentneedle"), "fields": .array([.string("body")])])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertTrue(response.items.isEmpty)
+        XCTAssertEqual(response.meta?["body_coverage_complete"], "false")
+        XCTAssertEqual(response.meta?["total_exact"], "false")
+        XCTAssertTrue(response.message?.contains("unavailable") == true)
+    }
+
+    func testMetadataOnlySearchDoesNotClaimBodiesWereChecked() async {
+        let response = await search([:])
+        XCTAssertEqual(response.meta?["bodies_checked"], "0")
+        XCTAssertEqual(response.meta?["body_coverage_complete"], "not_requested")
+        XCTAssertEqual(response.items.first?.metadata["body_status"], "not_requested")
+    }
+
+    func testMixedEpochOrderingHappensBeforeLimitAndOffset() async {
+        let response = await search(["query": .string("timestamp"), "limit": .number(2)])
+        XCTAssertEqual(response.items.map(\.id), ["7", "8"])
+        let second = await search(["query": .string("timestamp"), "limit": .number(1), "offset": .number(1)])
+        XCTAssertEqual(second.items.map(\.id), ["8"])
+    }
+
+    func testMultipartExtractionLimitsDiscloseIncompleteBodySearch() async throws {
+        for id in 1...15 { try fixture.writeBody("", id: String(id)) }
+        let harmless = "--boundary\r\nContent-Type: text/plain\r\n\r\nshort\r\n"
+        let hidden = "--boundary\r\nContent-Type: text/plain\r\n\r\nhiddenneedle\r\n--boundary--\r\n"
+        let email = "Content-Type: multipart/mixed; boundary=boundary\r\n\r\n"
+            + String(repeating: harmless, count: 130) + hidden
+        try fixture.writeRawEmlx("\(email.utf8.count)\n\(email)", id: "1")
+        let response = await search(["query": .string("hiddenneedle"), "fields": .array([.string("body")]), "mailbox": .string("Inbox")])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertTrue(response.items.isEmpty)
+        XCTAssertEqual(response.meta?["bodies_unavailable"], "0")
+        XCTAssertEqual(response.meta?["bodies_truncated"], "1")
+        XCTAssertEqual(response.meta?["body_coverage_complete"], "false")
+        XCTAssertEqual(response.meta?["total_exact"], "false")
+        let detail = await fixture.withMailRoot { await MailProvider().read(input: ["id": .string("1")]) }
+        XCTAssertEqual(detail.items.first?.metadata["body_truncated"], "true")
+    }
+
+    func testMultipartBoundaryPreservesCase() async throws {
+        let email = "Content-Type: multipart/alternative; BOUNDARY=CaseSensitive\r\n\r\n--CaseSensitive\r\nContent-Type: text/plain\r\n\r\nreadable text\r\n--CaseSensitive--\r\n"
+        try fixture.writeRawEmlx("\(email.utf8.count)\n\(email)", id: "1")
+        let response = await fixture.withMailRoot { await MailProvider().read(input: ["id": .string("1")]) }
+        XCTAssertEqual(response.items.first?.metadata["body_status"], "available")
+        XCTAssertEqual(response.items.first?.preview, "readable text")
+    }
+
+    func testNamedPeriodIncludesSubMillisecondTailButNotNextPeriod() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let end = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1))!
+        try fixture.setDate(end.addingTimeInterval(-0.0001).timeIntervalSince1970, id: 14)
+        try fixture.setDate(end.timeIntervalSince1970, id: 15)
+        let response = await search(["query": .string("memo"), "date_from": .string("2025"), "date_to": .string("2025")])
+        XCTAssertEqual(response.items.map(\.id), ["14", "13"])
+        XCTAssertNotNil(response.meta?["date_to_exclusive"])
+    }
+
+    func testDayBoundsRespectDaylightSavingTransition() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Berlin")!
+        for (day, hours) in [("2025-03-30", 23.0), ("2025-10-26", 25.0)] {
+            let start = try XCTUnwrap(MailProvider.MailDateBound.parse(day, edge: .start, calendar: calendar).instant)
+            let end = try XCTUnwrap(MailProvider.MailDateBound.parse(day, edge: .end, calendar: calendar).instant)
+            XCTAssertEqual(end.timeIntervalSince(start), hours * 3600 - 0.001, accuracy: 0.0001)
+        }
+    }
+
+    func testDateBoundsUseGregorianYearsDespiteUserCalendar() throws {
+        var buddhist = Calendar(identifier: .buddhist)
+        buddhist.timeZone = TimeZone(secondsFromGMT: 0)!
+        let date = try XCTUnwrap(MailProvider.MailDateBound.parse("2025-01-01", edge: .start, calendar: buddhist).instant)
+        XCTAssertEqual(date, ISO8601DateFormatter().date(from: "2025-01-01T00:00:00Z"))
+    }
+
+    func testInvalidFullTimestampsFailClosed() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Berlin")!
+        for text in ["2025-02-30T12:00:00Z", "2025-01-01T24:00:00Z",
+                     "2025-01-01T12:00:00Ztrailing", "2025-03-30T02:30:00",
+                     "2025-01-01T12:00:00+25:00"] {
+            XCTAssertThrowsError(try MailProvider.MailDateBound.parse(text, edge: .start, calendar: calendar), text)
+        }
+    }
+
+    func testFractionalLocalTimestampsAndExplicitOffsetsAgree() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Berlin")!
+        let local = try XCTUnwrap(MailProvider.MailDateBound.parse("2025-01-01T12:30:00.125", edge: .start, calendar: calendar).instant)
+        let zoned = try XCTUnwrap(MailProvider.MailDateBound.parse("2025-01-01T11:30:00.125Z", edge: .start, calendar: calendar).instant)
+        XCTAssertEqual(local, zoned)
+        let offset = try XCTUnwrap(MailProvider.MailDateBound.parse("2025-01-01T14:00:00.125+02:30", edge: .start, calendar: calendar).instant)
+        XCTAssertEqual(offset, zoned)
+    }
+
     // MARK: - Term semantics
 
     func testAllRequiresEveryTermAndAnyRequiresOnlyOne() async {
@@ -140,7 +271,8 @@ final class MailProviderSearchSemanticsTests: XCTestCase {
         ])
         XCTAssertEqual(response.items.map(\.id), ["3"])
         XCTAssertEqual(response.items.first?.metadata["fields_matched"], "body")
-        XCTAssertEqual(response.meta?["total_exact"], "true")
+        // Other candidates lack local bodies: this confirmed hit is only a lower bound.
+        XCTAssertEqual(response.meta?["total_exact"], "false")
     }
 
     func testFieldsOutsideTheDocumentedFourAreRefused() async {
@@ -212,6 +344,180 @@ final class MailProviderSearchSemanticsTests: XCTestCase {
         ])
         XCTAssertTrue(unmatched.items.isEmpty)
         XCTAssertEqual(unmatched.meta?["mailbox_filter_matched"], "0")
+    }
+
+    // MARK: - Date range filters
+
+    /// ISO 8601 stamp with the machine's local zone, the zone the provider resolves zoneless
+    /// input in. The instant is what matters; the zone designator only makes it unambiguous.
+    private func isoStamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = Calendar.current.timeZone
+        return formatter.string(from: date)
+    }
+
+    /// Core regression: the date column mixes Unix epoch seconds and Core Data reference-date
+    /// seconds, so the range filter must carry both SQL branches. A single-branch filter would
+    /// silently drop either the epoch-dated or the reference-dated row.
+    func testDateRangeMatchesBothEpochs() async {
+        let now = Date()
+        let response = await search([
+            "query": .string("timestamp"),
+            "fields": .array([.string("subject")]),
+            "date_from": .string(isoStamp(now.addingTimeInterval(-3_600))),
+            "date_to": .string(isoStamp(now))
+        ])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertEqual(Set(response.items.map(\.id)), ["7", "8"], "one row is epoch-dated, the other reference-dated")
+        XCTAssertEqual(response.meta?["time_filter"], "date_range")
+    }
+
+    /// date_to is inclusive and, for the short forms, the END of the named period: a message
+    /// at 23:30 must survive date_to naming its own day. Truncating at midnight would drop it.
+    func testDateToIncludesTheWholeDay() async {
+        let response = await search([
+            "query": .string("evening"),
+            "fields": .array([.string("subject")]),
+            "date_to": .string("2025-12-31")
+        ])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertEqual(response.items.map(\.id), ["14"])
+    }
+
+    /// The short forms are the main use case: date_from=2025 and date_to=2025 must cover
+    /// 1 January through 31 December inclusive, and must not reach into the following year.
+    func testShortFormsResolveToPeriodEdges() async {
+        let response = await search([
+            "query": .string("memo"),
+            "fields": .array([.string("subject")]),
+            "date_from": .string("2025"),
+            "date_to": .string("2025")
+        ])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertEqual(Set(response.items.map(\.id)), ["13", "14"], "1 January and 31 December both belong to 2025")
+        XCTAssertFalse(response.items.contains { $0.id == "15" }, "1 January 2026 is not part of 2025")
+    }
+
+    /// An invalid input must throw at parse time, never degrade into an empty result set: for
+    /// an archival search "no hits" looks like a result.
+    func testInvalidDateFailsClosed() async {
+        for raw in ["2025-02-30", "gestern", "17.03.2025"] {
+            let response = await search([
+                "query": .string("memo"),
+                "date_from": .string(raw)
+            ])
+            XCTAssertFalse(response.ok, "\(raw) must fail closed, not return nothing")
+            XCTAssertTrue(
+                response.message?.contains("Mail date_from and date_to accept") == true,
+                "\(raw): \(response.message ?? "")"
+            )
+        }
+    }
+
+    /// date_from after date_to is an invocation error, not a filter that happens to match
+    /// nothing. Both resolved instants belong in the message.
+    func testReversedRangeIsAnError() async {
+        let response = await search([
+            "query": .string("memo"),
+            "date_from": .string("2025-06"),
+            "date_to": .string("2025-03")
+        ])
+        XCTAssertFalse(response.ok)
+        XCTAssertTrue(response.message?.contains("2025-06-01") == true, response.message ?? "")
+        XCTAssertTrue(response.message?.contains("2025-03-31") == true, response.message ?? "")
+    }
+
+    /// A since_hours above zero next to an absolute range is an invocation error, not a silent
+    /// AND of two conflicting time filters.
+    func testExplicitSinceHoursWithRangeIsAnError() async {
+        let response = await search([
+            "query": .string("memo"),
+            "date_from": .string("2025"),
+            "date_to": .string("2025"),
+            "since_hours": .number(24)
+        ])
+        XCTAssertFalse(response.ok)
+        XCTAssertTrue(response.message?.contains("since_hours") == true, response.message ?? "")
+    }
+
+    /// A present-but-zero since_hours is not a competing filter, because the predicate only fires
+    /// above zero. Rejecting it would refuse a correct call from any client that pads optional
+    /// arguments with their defaults, which is what a model typically does.
+    func testZeroSinceHoursDoesNotConflictWithRange() async {
+        let response = await search([
+            "query": .string("timestamp"),
+            "fields": .array([.string("subject")]),
+            "date_from": .string("2025"),
+            "date_to": .string("2025"),
+            "since_hours": .number(0)
+        ])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertEqual(response.meta?["time_filter"], "date_range")
+    }
+
+    /// A since_hours that auto_intent derived from the query text yields to the
+    /// absolute range instead of silently ANDing into an empty set. meta.time_filter says
+    /// which filter won. The query uses "letzte 24h" because the intent cleaner removes that
+    /// phrase but keeps "heute" as a literal term, which would break match=all for reasons
+    /// unrelated to the date range.
+    func testAutoIntentSinceHoursYieldsToRange() async {
+        let response = await search([
+            "query": .string("memo letzte 24h"),
+            "fields": .array([.string("subject")]),
+            "auto_intent": .bool(true),
+            "date_from": .string("2025"),
+            "date_to": .string("2025")
+        ])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertEqual(Set(response.items.map(\.id)), ["13", "14"])
+        XCTAssertEqual(response.meta?["time_filter"], "date_range")
+        XCTAssertEqual(response.meta?["since_hours"], "0", "the auto-intent window was discarded")
+    }
+
+    /// Without a date column an unfiltered search keeps working; a requested range fails closed
+    /// with a clear message instead of silently searching everything.
+    func testMissingDateColumnFailsClosed() async throws {
+        let plain = try MailFixture(withDateColumn: false)
+        defer { plain.tearDown() }
+
+        let unfiltered = await plain.withMailRoot {
+            await MailProvider().search(input: [
+                "query": .string("quarterly"),
+                "fields": .array([.string("subject")])
+            ])
+        }
+        XCTAssertTrue(unfiltered.ok, unfiltered.message ?? "")
+        XCTAssertEqual(unfiltered.items.map(\.id), ["1"])
+
+        let ranged = await plain.withMailRoot {
+            await MailProvider().search(input: [
+                "query": .string("quarterly"),
+                "date_from": .string("2025")
+            ])
+        }
+        XCTAssertFalse(ranged.ok)
+        XCTAssertTrue(
+            ranged.message?.contains("Date filtering is not available") == true,
+            ranged.message ?? ""
+        )
+    }
+
+    /// meta.date_*_applied shows the instant the short form actually resolved to, including the
+    /// zone: without it the end-of-day rule for date_to would be invisible.
+    func testAppliedBoundsInMetadata() async {
+        let response = await search([
+            "query": .string("memo"),
+            "date_from": .string("2025"),
+            "date_to": .string("2025")
+        ])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        let fromApplied = response.meta?["date_from_applied"] ?? ""
+        let toApplied = response.meta?["date_to_applied"] ?? ""
+        XCTAssertTrue(fromApplied.hasPrefix("2025-01-01T00:00:00"), fromApplied)
+        XCTAssertTrue(toApplied.hasPrefix("2025-12-31T23:59:59"), toApplied)
+        XCTAssertEqual(response.meta?["time_filter"], "date_range")
+        XCTAssertEqual(response.meta?["date_from"], "2025")
+        XCTAssertEqual(response.meta?["date_to"], "2025")
     }
 
     // MARK: - Flag metadata and filters
@@ -513,7 +819,7 @@ private final class MailFixture {
     let root: URL
     private let outside: URL
 
-    init(withFlagColumns: Bool = true) throws {
+    init(withFlagColumns: Bool = true, withDateColumn: Bool = true) throws {
         let unique = UUID().uuidString
         root = URL(fileURLWithPath: "/private/tmp/m3mail-semantics-\(unique)", isDirectory: true)
         outside = URL(fileURLWithPath: "/private/tmp/m3mail-outside-\(unique)", isDirectory: true)
@@ -552,7 +858,23 @@ private final class MailFixture {
             throw Self.error("could not create the synthetic Envelope Index")
         }
         defer { sqlite3_close(database) }
-        try Self.populate(database, withFlagColumns: withFlagColumns)
+        try Self.populate(database, withFlagColumns: withFlagColumns, withDateColumn: withDateColumn)
+    }
+
+    func setDate(_ seconds: Double, id: Int) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open(root.appendingPathComponent("V10/MailData/Envelope Index").path, &database) == SQLITE_OK,
+              let database else { throw Self.error("Cannot open fixture") }
+        defer { sqlite3_close(database) }
+        try Self.execute("UPDATE messages SET date_received = \(seconds) WHERE ROWID = \(id)", on: database)
+    }
+
+    func writeBody(_ body: String, id: String) throws {
+        try Self.write(body: body, to: root.appendingPathComponent("V10/Mailboxes/Inbox/Messages/\(id).emlx"))
+    }
+
+    func writeRawEmlx(_ text: String, id: String) throws {
+        try Data(text.utf8).write(to: root.appendingPathComponent("V10/Mailboxes/Inbox/Messages/\(id).emlx"))
     }
 
     func tearDown() {
@@ -601,9 +923,17 @@ private final class MailFixture {
         try Data("\(email.utf8.count)\n\(email)".utf8).write(to: url)
     }
 
-    private static func populate(_ database: OpaquePointer, withFlagColumns: Bool) throws {
+    private static func populate(_ database: OpaquePointer, withFlagColumns: Bool, withDateColumn: Bool) throws {
         let epochNow = Date().timeIntervalSince1970
         let referenceNow = Date().timeIntervalSinceReferenceDate
+
+        // Fixed 2025/2026 dates for the date-range tests, resolved through Calendar so month
+        // lengths and leap years are never computed by hand. Row 13 is deliberately stored in
+        // the reference epoch, rows 14 and 15 in the Unix epoch.
+        let calendar = Calendar.current
+        let newYear2025 = calendar.date(from: DateComponents(year: 2025, month: 1, day: 1, hour: 12))!
+        let lateEvening2025 = calendar.date(from: DateComponents(year: 2025, month: 12, day: 31, hour: 23, minute: 30))!
+        let followingYear2026 = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1, hour: 9))!
 
         try execute(
             """
@@ -626,7 +956,10 @@ private final class MailFixture {
                 (9, 'timestamp epoch old'),
                 (10, 'timestamp reference old'),
                 (11, 'Multipart message'),
-                (12, 'Message behind a symlink');
+                (12, 'Message behind a symlink'),
+                (13, 'New year memo'),
+                (14, 'Late evening memo'),
+                (15, 'Following year memo');
 
             CREATE TABLE addresses (address TEXT, comment TEXT);
             INSERT INTO addresses (ROWID, address, comment) VALUES
@@ -637,22 +970,18 @@ private final class MailFixture {
             on: database
         )
 
-        var messagesSchema = """
-            CREATE TABLE messages (
-                message_id TEXT,
-                subject INTEGER,
-                sender INTEGER,
-                date_received REAL,
-                read INTEGER,
-                deleted INTEGER,
-                junk INTEGER,
-                mailbox INTEGER
-            """
+        var messageColumns = ["message_id TEXT", "subject INTEGER", "sender INTEGER"]
+        if withDateColumn { messageColumns.append("date_received REAL") }
+        messageColumns.append(contentsOf: ["read INTEGER", "deleted INTEGER", "junk INTEGER", "mailbox INTEGER"])
         if withFlagColumns {
-            messagesSchema += ",\n                flagged INTEGER,\n                flags INTEGER"
+            messageColumns.append(contentsOf: ["flagged INTEGER", "flags INTEGER"])
         }
-        messagesSchema += "\n            );"
-        try execute(messagesSchema, on: database)
+        try execute(
+            "CREATE TABLE messages (\n                "
+                + messageColumns.joined(separator: ",\n                ")
+                + "\n            );",
+            on: database
+        )
 
         try execute(
             """
@@ -687,20 +1016,29 @@ private final class MailFixture {
             (9, 9, 2, epochNow - 400_000, 0, 0, 0, 1),
             (10, 10, 2, referenceNow - 400_000, 0, 0, 0, 1),
             (11, 11, 2, epochNow - 700, 0, 0, 0, 1),
-            (12, 12, 2, epochNow - 800, 0, 0, 0, 3)
+            (12, 12, 2, epochNow - 800, 0, 0, 0, 3),
+            (13, 13, 2, newYear2025.timeIntervalSinceReferenceDate, 0, 0, 0, 1),
+            (14, 14, 2, lateEvening2025.timeIntervalSince1970, 0, 0, 0, 1),
+            (15, 15, 2, followingYear2026.timeIntervalSince1970, 0, 0, 0, 1)
         ]
         for (id, subject, sender, date, read, deleted, junk, mailbox) in rows {
             let flag: (flagged: Int, flags: Int) = withFlagColumns
                 ? (flagRows[id] ?? (flagged: 0, flags: 0))
                 : (flagged: 0, flags: 0)
-            let flagColumns = withFlagColumns ? ", flagged, flags" : ""
-            let flagValues = withFlagColumns ? ", \(flag.flagged), \(flag.flags)" : ""
+            var columnList = "ROWID, message_id, subject, sender"
+            var valueList = "(\(id), 'm\(id)', \(subject), \(sender)"
+            if withDateColumn {
+                columnList += ", date_received"
+                valueList += ", \(date)"
+            }
+            columnList += ", read, deleted, junk, mailbox"
+            valueList += ", \(read), \(deleted), \(junk), \(mailbox)"
+            if withFlagColumns {
+                columnList += ", flagged, flags"
+                valueList += ", \(flag.flagged), \(flag.flags)"
+            }
             try execute(
-                """
-                INSERT INTO messages
-                    (ROWID, message_id, subject, sender, date_received, read, deleted, junk, mailbox\(flagColumns))
-                VALUES (\(id), 'm\(id)', \(subject), \(sender), \(date), \(read), \(deleted), \(junk), \(mailbox)\(flagValues));
-                """,
+                "INSERT INTO messages (\(columnList)) VALUES \(valueList));",
                 on: database
             )
         }

@@ -29,6 +29,22 @@
   minutes to be indexed, and gray flags on Exchange accounts can read as red because
   Exchange follow-up flags have no gray.
 
+## 1.0.3
+
+Prepared source candidate, build 23; not uploaded to TestFlight or the App Store.
+
+- Add absolute `date_from`/`date_to` Mail search filters from PR #34, with strict Gregorian
+  timestamp validation, explicit/local zones, complete named periods and resolved-bound metadata.
+- Normalize the Mail index's inherited Unix/reference date heuristic consistently for filtering
+  and sorting before pagination; document remaining ambiguity in historical/future timestamps.
+- Address #35 with explicit Mail body availability/reason/source metadata and incomplete-search
+  coverage. Missing local Exchange bodies are no longer represented as empty message content.
+  No AppleScript fallback or additional permission is introduced.
+- Disclose multipart extraction limits as incomplete body coverage and preserve MIME boundary case.
+- Replace fixed sleeps in the cancellation/admission regression test with child synchronization.
+- Add regression coverage for missing/empty/malformed bodies, mixed-epoch ordering, invalid dates,
+  non-Gregorian preferences, fractional boundaries and daylight-saving transitions.
+
 ## 1.0.2 — 2026-10-03
 
 - Enable Apple Enhanced Security v2 for the native app and embedded MCP bridge.

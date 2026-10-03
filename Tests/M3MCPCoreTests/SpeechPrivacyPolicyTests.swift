@@ -209,18 +209,17 @@ final class SpeechPrivacyPolicyTests: XCTestCase {
 
     func testCallerCancellationReturnsWhileIgnoringChildRetainsLease() async {
         let admission = AsyncOperationAdmission(maximumConcurrentOperations: 1)
+        let childStarted = expectation(description: "Cancellation-ignoring child started")
+        let gate = DeadlineCompletionGate()
         let task = Task {
-            try await AsyncOperationDeadline.run(seconds: 5, admission: admission) {
-                await withCheckedContinuation { continuation in
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.25) {
-                        continuation.resume()
-                    }
-                }
+            try await AsyncOperationDeadline.run(seconds: zeitbudget(5), admission: admission) {
+                childStarted.fulfill()
+                await gate.wait()
                 return "late"
             }
         }
 
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        await fulfillment(of: [childStarted], timeout: zeitbudget(5))
         let started = DispatchTime.now().uptimeNanoseconds
         task.cancel()
 
@@ -236,7 +235,11 @@ final class SpeechPrivacyPolicyTests: XCTestCase {
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
         XCTAssertLessThan(elapsed, zeitbudget(0.15))
         XCTAssertEqual(admission.activeOperationCount, 1)
-        try? await Task.sleep(nanoseconds: 350_000_000)
+        await gate.release()
+        let cleanupDeadline = Date().addingTimeInterval(zeitbudget(5))
+        while admission.activeOperationCount != 0 && Date() < cleanupDeadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(admission.activeOperationCount, 0)
     }
 
