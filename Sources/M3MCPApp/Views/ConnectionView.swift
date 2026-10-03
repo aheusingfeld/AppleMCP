@@ -2,7 +2,7 @@ import M3MCPCore
 import SwiftUI
 
 struct ConnectionView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     var compact = false
     @State private var format: ClientConfiguration.Format = .codex
     var body: some View {
@@ -46,7 +46,7 @@ struct ConnectionView: View {
 }
 
 private struct TokenPanel: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     @State private var revealToken = false
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
@@ -125,7 +125,7 @@ private struct ConfigurationInstructions: View {
 }
 
 struct ConnectionCheckPanel: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     var body: some View {
         Panel {
             HStack {

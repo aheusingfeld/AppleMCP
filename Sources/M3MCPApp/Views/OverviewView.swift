@@ -2,7 +2,7 @@ import M3MCPCore
 import SwiftUI
 
 struct OverviewView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     private var granted: Int { model.permissionItems.filter { $0.metadata["state"] == "authorized" }.count }
     private var storePermissionHint: LocalizedStringKey {
         #if LOCALMCP_SANDBOX

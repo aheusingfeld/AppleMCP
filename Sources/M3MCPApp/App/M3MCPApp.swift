@@ -4,10 +4,10 @@ import SwiftUI
 @main
 struct M3MCPApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model: AppModel
+    @State private var model: AppModel
 
     init() {
-        _model = StateObject(wrappedValue: AppModel())
+        _model = State(initialValue: AppModel())
     }
 
     var body: some Scene {

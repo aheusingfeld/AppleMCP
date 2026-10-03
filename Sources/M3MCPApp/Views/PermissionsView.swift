@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct PermissionsView: View {
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     var compact = false
     @State private var selectedStore: SandboxStoreAccess.Store = .mail
     @State private var showsStoreImporter = false

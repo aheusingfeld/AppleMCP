@@ -5,7 +5,7 @@ import ImagePlayground
 
 struct SourcePage: View {
     let name: String
-    @ObservedObject var model: AppModel
+    @Bindable var model: AppModel
     @State private var sourceCheckMessage: String?
     @State private var checkingSource = false
     private var presentation: SourcePresentation { SourcePresentation.forName(name) }
