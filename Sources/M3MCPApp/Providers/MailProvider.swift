@@ -2365,14 +2365,15 @@ final class MailProvider {
             return .unavailable("invalid_emlx")
         }
         let to = try extractHeader(emailPart, name: "To")
-        let body = try extractBody(emailPart, depth: 0)
+        var extractionLimited = false
+        let body = try extractBody(emailPart, depth: 0, limited: &extractionLimited)
         var truncated = body.count > 8_000 ? String(body.prefix(8_000)) + "\n[truncated]" : body
         if sourceWasTruncated {
             truncated += truncated.isEmpty
                 ? "[message exceeds the safe read limit]"
                 : "\n[source truncated at \(Self.maximumEmlxBytes) bytes]"
         }
-        return MailBody(body: truncated, to: to, truncated: sourceWasTruncated || body.count > 8_000)
+        return MailBody(body: truncated, to: to, truncated: sourceWasTruncated || extractionLimited || body.count > 8_000)
     }
 
     private func extractHeader(_ email: String, name: String) throws -> String {
@@ -2394,10 +2395,11 @@ final class MailProvider {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    private func extractBody(_ email: String, depth: Int) throws -> String {
+    private func extractBody(_ email: String, depth: Int, limited: inout Bool) throws -> String {
         try checkCancellation(.bodyParsing)
         guard depth <= Self.maximumMultipartDepth else {
-            return "[multipart nesting limit reached]"
+            limited = true
+            return ""
         }
 
         let separator = email.contains("\r\n\r\n") ? "\r\n\r\n" : "\n\n"
@@ -2407,7 +2409,8 @@ final class MailProvider {
 
         let rawBody = String(email[bodyRange.upperBound...])
 
-        let contentType = try extractHeader(email, name: "Content-Type").lowercased()
+        let rawContentType = try extractHeader(email, name: "Content-Type")
+        let contentType = rawContentType.lowercased()
         let transferEncoding = try extractHeader(email, name: "Content-Transfer-Encoding").lowercased()
 
         var decoded = rawBody
@@ -2432,24 +2435,25 @@ final class MailProvider {
         }
 
         if contentType.contains("multipart/") {
-            decoded = try extractMultipartText(rawBody, contentType: contentType, depth: depth + 1)
+            decoded = try extractMultipartText(rawBody, contentType: rawContentType, depth: depth + 1, limited: &limited)
         }
 
         try checkCancellation(.bodyParsing)
         return decoded.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func extractMultipartText(_ body: String, contentType: String, depth: Int) throws -> String {
+    private func extractMultipartText(_ body: String, contentType: String, depth: Int, limited: inout Bool) throws -> String {
         try checkCancellation(.bodyParsing)
         let boundaryPattern = "boundary=\"?([^\";\\s]+)\"?"
-        guard let regex = try? NSRegularExpression(pattern: boundaryPattern),
+        guard let regex = try? NSRegularExpression(pattern: boundaryPattern, options: [.caseInsensitive]),
               let match = regex.firstMatch(in: contentType, range: NSRange(contentType.startIndex..., in: contentType)),
               let range = Range(match.range(at: 1), in: contentType) else {
-            return body
+            limited = true
+            return ""
         }
 
         let boundaryValue = String(contentType[range])
-        guard (1...200).contains(boundaryValue.utf8.count) else { return body }
+        guard (1...200).contains(boundaryValue.utf8.count) else { limited = true; return "" }
         let boundary = "--" + boundaryValue
         let parts = try Self.boundedComponentsCancellable(
             of: body,
@@ -2458,6 +2462,9 @@ final class MailProvider {
             cancellationCheck: { [cancellationCheck] in cancellationCheck(.bodyParsing) }
         )
 
+        // The splitter deliberately stops before traversing an attacker-controlled tail.
+        // Conservatively flag reaching the cap rather than claiming full text coverage.
+        if parts.count >= Self.maximumMultipartParts { limited = true }
         var plainText = ""
         var htmlText = ""
 
@@ -2465,11 +2472,17 @@ final class MailProvider {
             try checkCancellation(.bodyParsing)
             let lower = part.lowercased()
             if lower.contains("content-type: text/plain") || lower.contains("content-type:text/plain") {
-                let partBody = try extractBody(String(part), depth: depth)
-                if !partBody.isEmpty { plainText = partBody }
+                let partBody = try extractBody(String(part), depth: depth, limited: &limited)
+                if !partBody.isEmpty {
+                    if !plainText.isEmpty { limited = true }
+                    plainText = partBody
+                }
             } else if lower.contains("content-type: text/html") || lower.contains("content-type:text/html") {
-                let partBody = try extractBody(String(part), depth: depth)
-                if !partBody.isEmpty { htmlText = try stripHTML(partBody) }
+                let partBody = try extractBody(String(part), depth: depth, limited: &limited)
+                if !partBody.isEmpty {
+                    if !htmlText.isEmpty { limited = true }
+                    htmlText = try stripHTML(partBody)
+                }
             }
         }
 

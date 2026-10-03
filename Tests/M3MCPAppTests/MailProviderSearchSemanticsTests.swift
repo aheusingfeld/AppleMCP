@@ -95,6 +95,32 @@ final class MailProviderSearchSemanticsTests: XCTestCase {
         XCTAssertEqual(second.items.map(\.id), ["8"])
     }
 
+    func testMultipartExtractionLimitsDiscloseIncompleteBodySearch() async throws {
+        for id in 1...15 { try fixture.writeBody("", id: String(id)) }
+        let harmless = "--boundary\r\nContent-Type: text/plain\r\n\r\nshort\r\n"
+        let hidden = "--boundary\r\nContent-Type: text/plain\r\n\r\nhiddenneedle\r\n--boundary--\r\n"
+        let email = "Content-Type: multipart/mixed; boundary=boundary\r\n\r\n"
+            + String(repeating: harmless, count: 130) + hidden
+        try fixture.writeRawEmlx("\(email.utf8.count)\n\(email)", id: "1")
+        let response = await search(["query": .string("hiddenneedle"), "fields": .array([.string("body")]), "mailbox": .string("Inbox")])
+        XCTAssertTrue(response.ok, response.message ?? "")
+        XCTAssertTrue(response.items.isEmpty)
+        XCTAssertEqual(response.meta?["bodies_unavailable"], "0")
+        XCTAssertEqual(response.meta?["bodies_truncated"], "1")
+        XCTAssertEqual(response.meta?["body_coverage_complete"], "false")
+        XCTAssertEqual(response.meta?["total_exact"], "false")
+        let detail = await fixture.withMailRoot { await MailProvider().read(input: ["id": .string("1")]) }
+        XCTAssertEqual(detail.items.first?.metadata["body_truncated"], "true")
+    }
+
+    func testMultipartBoundaryPreservesCase() async throws {
+        let email = "Content-Type: multipart/alternative; BOUNDARY=CaseSensitive\r\n\r\n--CaseSensitive\r\nContent-Type: text/plain\r\n\r\nreadable text\r\n--CaseSensitive--\r\n"
+        try fixture.writeRawEmlx("\(email.utf8.count)\n\(email)", id: "1")
+        let response = await fixture.withMailRoot { await MailProvider().read(input: ["id": .string("1")]) }
+        XCTAssertEqual(response.items.first?.metadata["body_status"], "available")
+        XCTAssertEqual(response.items.first?.preview, "readable text")
+    }
+
     func testNamedPeriodIncludesSubMillisecondTailButNotNextPeriod() async throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current

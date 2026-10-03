@@ -40,6 +40,7 @@ Prepared source candidate, build 23; not uploaded to TestFlight or the App Store
 - Address #35 with explicit Mail body availability/reason/source metadata and incomplete-search
   coverage. Missing local Exchange bodies are no longer represented as empty message content.
   No AppleScript fallback or additional permission is introduced.
+- Disclose multipart extraction limits as incomplete body coverage and preserve MIME boundary case.
 - Replace fixed sleeps in the cancellation/admission regression test with child synchronization.
 - Add regression coverage for missing/empty/malformed bodies, mixed-epoch ordering, invalid dates,
   non-Gregorian preferences, fractional boundaries and daylight-saving transitions.
