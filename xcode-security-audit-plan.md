@@ -57,3 +57,11 @@ Ausstehendes Veröffentlichungstor: native Prüfung der realen Keychain-Zugriffe
 Die signierte gehärtete App wurde am 3. Oktober 2026 ohne Demo- oder Testargumente gestartet. Übersicht, Freigaben und der deutsche MCP-/Risikodialog sind bedienbar; der vollständige Dialog ist lesbar und scrollbar. Abbrechen und erneutes Öffnen funktionieren. Die Oberfläche zeigt acht freigegebene Datenquellen; diese Anzeige allein bestätigt keinen erfolgreichen Datenzugriff. Die Zugriffsprüfung bei gestopptem Server zeigt erwartungsgemäß den Hinweis, zuerst den Server zu starten.
 
 Die persönliche Zustimmung steht in dieser Installation noch aus. Der Serverstart wurde nicht ausgeführt. Keychain-Kontinuität und echte Provider-Aufrufe bleiben daher offen. Build 21 wird als Release-Kandidat vorbereitet; ein lokales Archiv ist weder ein Upload noch eine Freigabe dieser ausstehenden Prüfungen.
+
+## Abschluss der nativen Freigabeprüfung
+
+Am 3. Oktober 2026 bestätigte der Nutzer die Einrichtung selbst und erlaubte ausdrücklich einen Server-Stopp mit erneutem Start. Beide Zustandswechsel und die anschließende Bridge-Anmeldung waren erfolgreich; keine Schlüsselbundabfrage oder Fehlermeldung wurde beobachtet. Der Token blieb maskiert. Dies prüft einen Serverneustart innerhalb der App, keinen vollständigen Prozessneustart und keinen Vergleich des Tokenwerts.
+
+Echte begrenzte Leseprüfungen für Kalender, Kontakte, Erinnerungen, Notizen/Apple Events und Fotos erfolgreich. Ein erster Fotozugriff war verzögert; der Wiederholungsversuch erfolgreich. Mail-/Sprachmemo-Inhalte wurden nicht erneut gelesen. Die oben dokumentierten ausstehenden persönlichen Zustimmungen und Provider-Prüfungen sind damit im beschriebenen Umfang erledigt.
+
+Die frühere Store-Version 1.0.1 (19) wurde inzwischen von Apple genehmigt. Für die neuen Änderungen wurde deshalb 1.0.2 (22) archiviert und als Update mit manueller Veröffentlichung angelegt. PR #37 und seine vollständige CI sind erfolgreich abgeschlossen; der Upload wird separat verifiziert.
