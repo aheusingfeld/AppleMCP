@@ -63,6 +63,17 @@ final class MailProviderSchemeMailboxTests: XCTestCase {
         XCTAssertFalse(probe.reached(.emlxSearchEntry), "the whole store must not be walked when the mailbox is known")
     }
 
+    func testAMultipartMessageWhoseContentTypeIsFoldedReturnsItsText() async {
+        let response = await fixture.withMailRoot {
+            await MailProvider().read(input: ["id": .string("3001")])
+        }
+
+        XCTAssertTrue(response.ok, response.message ?? "")
+        let item = response.items.first
+        XCTAssertEqual(item?.metadata["body_status"], "available", item?.metadata["body_reason"] ?? "")
+        XCTAssertTrue(item?.preview?.contains("folded-header-needle") == true, item?.preview ?? "")
+    }
+
     func testBodySearchFindsAMessageInASchemeMailbox() async {
         let response = await fixture.withMailRoot {
             await MailProvider().search(input: [
@@ -147,6 +158,20 @@ private final class SchemeMailFixture {
         try Self.write(body: "gmail-partial-needle", to: gmailMessages.appendingPathComponent("12.partial.emlx"))
         try Self.write(body: "secret-outside-the-store", to: outsideMessages.appendingPathComponent("13.emlx"))
         try Self.write(body: "misplaced-shard-needle", to: misplacedMessages.appendingPathComponent("2001.emlx"))
+        let foldedMessages = version.appendingPathComponent(
+            "\(Self.exchangeAccount)/Inbox.mbox/\(store)/Data/3/Messages",
+            isDirectory: true
+        )
+        try manager.createDirectory(at: foldedMessages, withIntermediateDirectories: true)
+        try Self.writeRaw(
+            "To: Anna <anna@example.test>,\r\n\tBob <bob@example.test>\r\n"
+                + "Content-Type: multipart/alternative;\r\n\tboundary=\"_000_FOLDED_\"\r\n"
+                + "MIME-Version: 1.0\r\n\r\n"
+                + "--_000_FOLDED_\r\nContent-Type: text/plain; charset=\"utf-8\"\r\n\r\nfolded-header-needle\r\n"
+                + "--_000_FOLDED_\r\nContent-Type: text/html; charset=\"utf-8\"\r\n\r\n<p>folded html</p>\r\n"
+                + "--_000_FOLDED_--\r\n",
+            to: foldedMessages.appendingPathComponent("3001.emlx")
+        )
 
         var database: OpaquePointer?
         guard sqlite3_open(mailData.appendingPathComponent("Envelope Index").path, &database) == SQLITE_OK,
@@ -176,7 +201,8 @@ private final class SchemeMailFixture {
                 (794744, 'm794744', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1),
                 (12, 'm12', 2, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 2),
                 (13, 'm13', 3, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 3),
-                (2001, 'm2001', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1);
+                (2001, 'm2001', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1),
+                (3001, 'm3001', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1);
             """,
             on: database
         )
@@ -202,7 +228,10 @@ private final class SchemeMailFixture {
     }
 
     private static func write(body: String, to url: URL) throws {
-        let email = "Content-Type: text/plain; charset=utf-8\r\n\r\n\(body)\r\n"
+        try writeRaw("Content-Type: text/plain; charset=utf-8\r\n\r\n\(body)\r\n", to: url)
+    }
+
+    private static func writeRaw(_ email: String, to url: URL) throws {
         try Data("\(email.utf8.count)\n\(email)".utf8).write(to: url)
     }
 

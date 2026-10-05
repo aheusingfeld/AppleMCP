@@ -2431,18 +2431,18 @@ final class MailProvider {
         let headerEnd = email.range(of: "\r\n\r\n") ?? email.range(of: "\n\n")
         let headerSection = headerEnd.map { String(email[email.startIndex..<$0.lowerBound]) } ?? email
 
-        let pattern = "(?mi)^\(NSRegularExpression.escapedPattern(for: name)):\\s*(.+?)(?=\\n\\S|\\n\\n|$)"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
-              let match = regex.firstMatch(in: headerSection, range: NSRange(headerSection.startIndex..., in: headerSection)),
-              let range = Range(match.range(at: 1), in: headerSection) else {
-            return ""
-        }
-
+        // RFC 5322 folding: a line break followed by whitespace continues the previous header.
+        let unfolded = headerSection
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n[ \t]+", with: " ", options: .regularExpression)
         try checkCancellation(.bodyParsing)
-        return headerSection[range]
-            .replacingOccurrences(of: "\r\n", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespaces)
+
+        for line in unfolded.split(separator: "\n") {
+            guard let colon = line.firstIndex(of: ":"),
+                  line[..<colon].caseInsensitiveCompare(name) == .orderedSame else { continue }
+            return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        }
+        return ""
     }
 
     private func extractBody(_ email: String, depth: Int, limited: inout Bool) throws -> String {
