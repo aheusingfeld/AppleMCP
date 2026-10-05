@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix `mail_read` reporting `emlx_not_found` and `body` search matching nothing for real Mail stores (#35). Mail stores every mailbox url with a scheme (`ews://`, `imap://`, `local://`), which skipped the direct file lookup, so a body was only found if the 50,000-entry walk of the whole store happened to reach it. Scheme urls now resolve to `<account>/<Folder>.mbox/<store>/Data/<shards>/Messages`; a miss walks only that mailbox before the whole store.
+
 - Build 20: include the Mail flag metadata and filters in the next TestFlight candidate.
 
 - Build 19: rebuild the reviewed disclosure with stable Xcode 27.0 (`27A266a`) after App Store Connect rejected the Xcode 27.1 beta archive.

@@ -86,6 +86,7 @@ final class MailProvider {
         case messageRow
         case recipientRow
         case bodyCandidate
+        case mailboxSearchEntry
         case emlxSearchEntry
         case bodyParsing
         case responseItem
@@ -2151,17 +2152,24 @@ final class MailProvider {
         var body: MailBody?
         var recipients = ""
 
-        if let mailboxID, let box = mailboxes[mailboxID],
-           let emlxURL = emlxURL(mailboxURL: box.url, mailRoot: mailRoot, messageROWID: rowID) {
-            let parsed = try parseEmlx(at: emlxURL)
+        var file: URL?
+        if let mailboxID, let box = mailboxes[mailboxID] {
+            file = emlxURL(mailboxURL: box.url, mailRoot: mailRoot, messageROWID: rowID)
+            if file == nil, let mailbox = mailboxDirectory(mailboxURL: box.url, mailRoot: mailRoot) {
+                file = try findEmlxBySearch(
+                    under: mailbox, mailRoot: mailRoot, messageROWID: rowID, checkpoint: .mailboxSearchEntry
+                )
+            }
+        }
+        if file == nil {
+            file = try findEmlxBySearch(
+                under: mailRoot, mailRoot: mailRoot, messageROWID: rowID, checkpoint: .emlxSearchEntry
+            )
+        }
+        if let file {
+            let parsed = try parseEmlx(at: file)
             body = parsed
             recipients = parsed.to
-        }
-
-        if body == nil, let found = try findEmlxBySearch(mailRoot: mailRoot, messageROWID: rowID) {
-            let parsed = try parseEmlx(at: found)
-            body = parsed
-            if recipients.isEmpty { recipients = parsed.to }
         }
 
         if recipients.isEmpty {
@@ -2195,6 +2203,23 @@ final class MailProvider {
     }
 
     private func emlxURL(mailboxURL raw: String, mailRoot: URL, messageROWID: String) -> URL? {
+        guard let resolvedMailbox = mailboxDirectory(mailboxURL: raw, mailRoot: mailRoot) else { return nil }
+
+        var candidates = [
+            resolvedMailbox.appendingPathComponent("Messages/\(messageROWID).emlx"),
+            resolvedMailbox.appendingPathComponent("Messages/\(messageROWID).partial.emlx"),
+            resolvedMailbox.appendingPathComponent("\(messageROWID).emlx")
+        ]
+        let messagesPath = Self.storeMessagesPath(messageROWID: messageROWID)
+        for store in storeDirectories(in: resolvedMailbox) {
+            candidates.append(store.appendingPathComponent("\(messagesPath)/\(messageROWID).emlx"))
+            candidates.append(store.appendingPathComponent("\(messagesPath)/\(messageROWID).partial.emlx"))
+        }
+        return candidates.compactMap { safeRegularFile($0, under: mailRoot) }.first
+    }
+
+    /// Mail writes `ews://<account>/Parent/Child` for the folder `<account>/Parent.mbox/Child.mbox`.
+    private func mailboxDirectory(mailboxURL raw: String, mailRoot: URL) -> URL? {
         let mailboxPath: URL
         if raw.hasPrefix("file://") {
             guard let parsed = URL(string: raw) else { return nil }
@@ -2202,28 +2227,53 @@ final class MailProvider {
         } else if raw.hasPrefix("/") {
             mailboxPath = URL(fileURLWithPath: raw)
         } else if let parsed = URL(string: raw), let scheme = parsed.scheme, !scheme.isEmpty {
-            // A remote mailbox url is not a filesystem path; the cached files live under the store.
-            _ = parsed
-            return nil
+            guard let account = parsed.host, Self.isSafePathComponent(account) else { return nil }
+            let folders = parsed.path.split(separator: "/").map(String.init)
+            guard !folders.isEmpty, folders.allSatisfy(Self.isSafePathComponent) else { return nil }
+            mailboxPath = folders.reduce(mailRoot.appendingPathComponent(account, isDirectory: true)) {
+                $0.appendingPathComponent("\($1).mbox", isDirectory: true)
+            }
         } else {
             mailboxPath = mailRoot.appendingPathComponent(raw, isDirectory: true)
         }
 
         let resolvedMailbox = mailboxPath.resolvingSymlinksInPath().standardizedFileURL
-        guard isDescendant(resolvedMailbox, of: mailRoot) else { return nil }
-
-        let candidates = [
-            resolvedMailbox.appendingPathComponent("Messages/\(messageROWID).emlx"),
-            resolvedMailbox.appendingPathComponent("Messages/\(messageROWID).partial.emlx"),
-            resolvedMailbox.appendingPathComponent("\(messageROWID).emlx")
-        ]
-        return candidates.compactMap { safeRegularFile($0, under: mailRoot) }.first
+        return isDescendant(resolvedMailbox, of: mailRoot) ? resolvedMailbox : nil
     }
 
-    private func findEmlxBySearch(mailRoot: URL, messageROWID: String) throws -> URL? {
-        try checkCancellation(.emlxSearchEntry)
+    /// The per-mailbox store directories, excluding child mailboxes, which are `.mbox` siblings.
+    private func storeDirectories(in mailbox: URL) -> [URL] {
+        let entries = (try? fileManager.contentsOfDirectory(
+            at: mailbox,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return Array(entries.lazy.filter { entry in
+            entry.pathExtension != "mbox"
+                && (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }.prefix(64))
+    }
+
+    /// Mail shards messages by the reversed digits of `ROWID / 1000`: ROWID 794744 lives in `Data/4/9/7/Messages`.
+    private static func storeMessagesPath(messageROWID: String) -> String {
+        guard let rowID = Int(messageROWID), rowID >= 1_000 else { return "Data/Messages" }
+        let shards = String(rowID / 1_000).reversed().map(String.init)
+        return (["Data"] + shards + ["Messages"]).joined(separator: "/")
+    }
+
+    private static func isSafePathComponent(_ component: String) -> Bool {
+        !component.isEmpty && component != "." && component != ".." && !component.contains("/")
+    }
+
+    private func findEmlxBySearch(
+        under searchRoot: URL,
+        mailRoot: URL,
+        messageROWID: String,
+        checkpoint: CancellationCheckpoint
+    ) throws -> URL? {
+        try checkCancellation(checkpoint)
         let enumerator = fileManager.enumerator(
-            at: mailRoot,
+            at: searchRoot,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         )
@@ -2231,7 +2281,7 @@ final class MailProvider {
         let targetNames = Set(["\(messageROWID).emlx", "\(messageROWID).partial.emlx"])
         var inspected = 0
         while let url = enumerator?.nextObject() as? URL {
-            try checkCancellation(.emlxSearchEntry)
+            try checkCancellation(checkpoint)
             inspected += 1
             guard inspected <= Self.maximumEmlxSearchEntries else { return nil }
             if targetNames.contains(url.lastPathComponent),
