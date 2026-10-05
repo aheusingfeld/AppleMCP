@@ -93,6 +93,26 @@ final class MailProviderSchemeMailboxTests: XCTestCase {
         XCTAssertEqual(pages.joined(), SchemeMailFixture.longBody)
     }
 
+    func testOffsetsAndTotalsCountUnicodeScalarsSoCRLFBodiesAddUp() async {
+        var pages: [String] = []
+        var offset: Int? = 0
+        var reportedTotal: String?
+        while let current = offset, pages.count < 10 {
+            let response = await fixture.withMailRoot {
+                await MailProvider().read(input: ["id": .string("3003"), "offset": .number(Double(current))])
+            }
+            let item = response.items.first
+            reportedTotal = item?.metadata["body_total_chars"]
+            pages.append((item?.preview ?? "").replacingOccurrences(of: "\n[truncated]", with: ""))
+            offset = item?.metadata["body_next_offset"].flatMap(Int.init)
+        }
+
+        let joined = pages.joined()
+        XCTAssertEqual(reportedTotal, String(SchemeMailFixture.crlfBody.unicodeScalars.count))
+        XCTAssertEqual(joined.unicodeScalars.count, SchemeMailFixture.crlfBody.unicodeScalars.count)
+        XCTAssertEqual(joined, SchemeMailFixture.crlfBody)
+    }
+
     func testAnOffsetPastTheEndOfTheBodyIsRefused() async {
         let response = await fixture.withMailRoot {
             await MailProvider().read(input: [
@@ -156,6 +176,7 @@ private final class SchemeMailFixture {
     static let imapAccount = "985C7C64-0000-4000-8000-000000000002"
     static let longBody = (0..<1_000).map { String(format: "line %04d ends here.\n", $0) }.joined()
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    static let crlfBody = longBody.replacingOccurrences(of: "\n", with: "\r\n")
 
     let root: URL
     private let outside: URL
@@ -206,6 +227,7 @@ private final class SchemeMailFixture {
             to: foldedMessages.appendingPathComponent("3001.emlx")
         )
         try Self.write(body: Self.longBody, to: foldedMessages.appendingPathComponent("3002.emlx"))
+        try Self.write(body: Self.crlfBody, to: foldedMessages.appendingPathComponent("3003.emlx"))
 
         var database: OpaquePointer?
         guard sqlite3_open(mailData.appendingPathComponent("Envelope Index").path, &database) == SQLITE_OK,
@@ -237,7 +259,8 @@ private final class SchemeMailFixture {
                 (13, 'm13', 3, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 3),
                 (2001, 'm2001', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1),
                 (3001, 'm3001', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1),
-                (3002, 'm3002', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1);
+                (3002, 'm3002', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1),
+                (3003, 'm3003', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1);
             """,
             on: database
         )

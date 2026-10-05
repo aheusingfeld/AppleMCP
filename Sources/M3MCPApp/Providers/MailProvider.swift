@@ -2455,10 +2455,14 @@ final class MailProvider {
         let to = try extractHeader(emailPart, name: "To")
         var extractionLimited = false
         let body = try extractBody(emailPart, depth: 0, limited: &extractionLimited)
-        let total = body.count
-        let rest = body[body.index(body.startIndex, offsetBy: min(offset, total))...]
-        let page = String(rest.prefix(8_000))
-        let hasMore = page.count < rest.count
+        // Unicode scalars, not grapheme clusters, so offsets match what JSON clients count (CRLF is two).
+        let scalars = body.unicodeScalars
+        let total = scalars.count
+        let rest = scalars[scalars.index(scalars.startIndex, offsetBy: min(offset, total))...]
+        let pageScalars = rest.prefix(8_000)
+        let pageLength = pageScalars.count
+        let hasMore = pageLength < rest.count
+        let page = String(Substring(pageScalars))
         var text = hasMore ? page + "\n[truncated]" : page
         if sourceWasTruncated && !hasMore {
             text += text.isEmpty
@@ -2471,7 +2475,7 @@ final class MailProvider {
             truncated: sourceWasTruncated || extractionLimited || hasMore,
             offset: offset,
             totalCharacters: total,
-            nextOffset: hasMore ? offset + page.count : nil
+            nextOffset: hasMore ? offset + pageLength : nil
         )
     }
 
