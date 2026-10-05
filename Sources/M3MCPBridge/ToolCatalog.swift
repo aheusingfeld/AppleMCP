@@ -334,9 +334,10 @@ enum ToolCatalog {
         ),
         MCPTool(
             name: .mailRead,
-            description: "Read one email by its canonical numeric id from mail_search. Reads at most 4 MiB from the local .emlx source and returns at most 8,000 characters of extracted body text, with truncation markers when a bound is reached. metadata.body_status/body_reason distinguish missing or unreadable .emlx from an empty extracted body. Exchange and other accounts may keep bodies outside local .emlx files; missing local text does not mean an empty message. Unavailable bodies have no preview. There is no AppleScript fallback. Requires read access to the selected data folder.",
+            description: "Read one email by its canonical numeric id from mail_search. Reads at most 4 MiB from the local .emlx source and returns at most 8,000 characters of extracted body text per call, with truncation markers when a bound is reached. A longer body is read page by page: pass metadata.body_next_offset as offset until it is absent; metadata.body_total_chars is the full length. metadata.body_status/body_reason distinguish missing or unreadable .emlx from an empty extracted body. Exchange and other accounts may keep bodies outside local .emlx files; missing local text does not mean an empty message. Unavailable bodies have no preview. There is no AppleScript fallback. Requires read access to the selected data folder.",
             schema: objectSchema(properties: [
-                "id": ["type": "string", "description": "Message id returned by mail_search."]
+                "id": ["type": "string", "description": "Message id returned by mail_search."],
+                "offset": ["type": "integer", "description": "Character offset into the extracted body. Default 0; use metadata.body_next_offset for the next page."]
             ], required: ["id"])
         ),
         MCPTool(

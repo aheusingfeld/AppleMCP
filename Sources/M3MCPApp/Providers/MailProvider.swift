@@ -407,6 +407,11 @@ final class MailProvider {
             )
         }
 
+        let offset = input.int("offset", default: 0)
+        guard offset >= 0 else {
+            return ToolResponse(ok: false, source: sourceName, message: "offset must be zero or positive.")
+        }
+
         do {
             let indexURL = try locateEnvelopeIndex()
             let mailRoot = indexURL
@@ -414,9 +419,16 @@ final class MailProvider {
                 .deletingLastPathComponent()
 
             let detail = try withDatabase(at: indexURL) { database -> MailDetail in
-                try readMessageDetail(database: database, rowID: id, mailRoot: mailRoot)
+                try readMessageDetail(database: database, rowID: id, mailRoot: mailRoot, offset: offset)
             }
 
+            if offset > 0, detail.body.status == "available", offset >= detail.body.totalCharacters {
+                return ToolResponse(
+                    ok: false,
+                    source: sourceName,
+                    message: "offset \(offset) is past the end of the body (\(detail.body.totalCharacters) characters)."
+                )
+            }
             try checkCancellation(.requestBoundary)
             return try makeDetailResponse(detail)
         } catch is CancellationError {
@@ -1890,13 +1902,27 @@ final class MailProvider {
         let status: String
         let reason: String
         var truncated = false
+        var offset = 0
+        var totalCharacters = 0
+        var nextOffset: Int?
 
-        init(body: String, to: String, truncated: Bool = false) {
+        init(
+            body: String,
+            to: String,
+            truncated: Bool = false,
+            offset: Int = 0,
+            totalCharacters: Int? = nil,
+            nextOffset: Int? = nil
+        ) {
+            let total = totalCharacters ?? body.count
             self.body = body
             self.to = to
-            self.status = body.isEmpty ? "empty" : "available"
-            self.reason = body.isEmpty ? "no_text_extracted" : ""
+            self.status = total == 0 ? "empty" : "available"
+            self.reason = total == 0 ? "no_text_extracted" : ""
             self.truncated = truncated
+            self.offset = offset
+            self.totalCharacters = total
+            self.nextOffset = nextOffset
         }
 
         private init(reason: String) {
@@ -2067,6 +2093,13 @@ final class MailProvider {
         }
 
         metadata.merge(detail.body.metadata) { _, new in new }
+        if detail.body.status != "unavailable" {
+            metadata["body_offset"] = String(detail.body.offset)
+            metadata["body_total_chars"] = String(detail.body.totalCharacters)
+            if let next = detail.body.nextOffset {
+                metadata["body_next_offset"] = String(next)
+            }
+        }
         let item = DataItem(
             id: detail.id,
             title: detail.subject.isEmpty ? "(no subject)" : detail.subject,
@@ -2094,7 +2127,12 @@ final class MailProvider {
         return response
     }
 
-    private func readMessageDetail(database: OpaquePointer, rowID: String, mailRoot: URL) throws -> MailDetail {
+    private func readMessageDetail(
+        database: OpaquePointer,
+        rowID: String,
+        mailRoot: URL,
+        offset: Int
+    ) throws -> MailDetail {
         try checkCancellation(.requestBoundary)
         let schema = try MailSchema(database: database, provider: self)
         let mailboxes = try readMailboxes(database: database)
@@ -2167,7 +2205,7 @@ final class MailProvider {
             )
         }
         if let file {
-            let parsed = try parseEmlx(at: file)
+            let parsed = try parseEmlx(at: file, offset: offset)
             body = parsed
             recipients = parsed.to
         }
@@ -2379,7 +2417,7 @@ final class MailProvider {
 
     // MARK: - .emlx parsing
 
-    private func parseEmlx(at url: URL) throws -> MailBody {
+    private func parseEmlx(at url: URL, offset: Int = 0) throws -> MailBody {
         try checkCancellation(.bodyParsing)
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             return .unavailable("emlx_unreadable")
@@ -2417,13 +2455,24 @@ final class MailProvider {
         let to = try extractHeader(emailPart, name: "To")
         var extractionLimited = false
         let body = try extractBody(emailPart, depth: 0, limited: &extractionLimited)
-        var truncated = body.count > 8_000 ? String(body.prefix(8_000)) + "\n[truncated]" : body
-        if sourceWasTruncated {
-            truncated += truncated.isEmpty
+        let total = body.count
+        let rest = body[body.index(body.startIndex, offsetBy: min(offset, total))...]
+        let page = String(rest.prefix(8_000))
+        let hasMore = page.count < rest.count
+        var text = hasMore ? page + "\n[truncated]" : page
+        if sourceWasTruncated && !hasMore {
+            text += text.isEmpty
                 ? "[message exceeds the safe read limit]"
                 : "\n[source truncated at \(Self.maximumEmlxBytes) bytes]"
         }
-        return MailBody(body: truncated, to: to, truncated: sourceWasTruncated || extractionLimited || body.count > 8_000)
+        return MailBody(
+            body: text,
+            to: to,
+            truncated: sourceWasTruncated || extractionLimited || hasMore,
+            offset: offset,
+            totalCharacters: total,
+            nextOffset: hasMore ? offset + page.count : nil
+        )
     }
 
     private func extractHeader(_ email: String, name: String) throws -> String {

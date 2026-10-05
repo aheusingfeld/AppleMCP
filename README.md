@@ -409,6 +409,10 @@ start of the next period, so fractions below one millisecond are included too.
 - `body_source`: `emlx` or `none` when inspected.
 - `body_truncated`: whether the extraction/read bound or returned preview limit was reached.
 
+`mail_read` returns at most 8,000 characters per call. It also reports `body_offset` and
+`body_total_chars`, plus `body_next_offset` while more text follows; pass that value as `offset`
+to read the next page. An `offset` past the end of the body is refused.
+
 An unavailable body has no preview; an error message is never substituted for email text.
 `empty` describes extracted local text, not proof that the original message has no content.
 Exchange and other accounts may have text in Mail.app without an accessible local `.emlx`.

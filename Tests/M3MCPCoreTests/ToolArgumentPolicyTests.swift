@@ -67,6 +67,15 @@ final class ToolArgumentPolicyTests: XCTestCase {
         )?.clientMessage.contains("array of strings") == true)
     }
 
+    func testMailReadPolicyAcceptsOnlyABoundedOffset() {
+        let policy = M3MCPToolArgumentPolicy.forTool(.mailRead)
+
+        XCTAssertNil(policy.validationError(for: ["id": .string("1"), "offset": .number(8_000)], tool: .mailRead))
+        XCTAssertNotNil(policy.validationError(for: ["id": .string("1"), "offset": .number(-1)], tool: .mailRead))
+        XCTAssertNotNil(policy.validationError(for: ["id": .string("1"), "offset": .number(4_194_305)], tool: .mailRead))
+        XCTAssertNotNil(policy.validationError(for: ["id": .string("1"), "offset": .string("8000")], tool: .mailRead))
+    }
+
     func testMailSearchPolicyAcceptsFlagArguments() {
         let policy = M3MCPToolArgumentPolicy.forTool(.mailSearch)
         XCTAssertNil(policy.validationError(

@@ -74,6 +74,37 @@ final class MailProviderSchemeMailboxTests: XCTestCase {
         XCTAssertTrue(item?.preview?.contains("folded-header-needle") == true, item?.preview ?? "")
     }
 
+    func testALongBodyCanBeReadCompletelyPageByPage() async {
+        var pages: [String] = []
+        var offset: Int? = 0
+        while let current = offset, pages.count < 10 {
+            let response = await fixture.withMailRoot {
+                await MailProvider().read(input: ["id": .string("3002"), "offset": .number(Double(current))])
+            }
+            XCTAssertTrue(response.ok, response.message ?? "")
+            let item = response.items.first
+            XCTAssertEqual(item?.metadata["body_offset"], String(current))
+            XCTAssertEqual(item?.metadata["body_total_chars"], String(SchemeMailFixture.longBody.count))
+            pages.append((item?.preview ?? "").replacingOccurrences(of: "\n[truncated]", with: ""))
+            offset = item?.metadata["body_next_offset"].flatMap(Int.init)
+        }
+
+        XCTAssertEqual(pages.count, 3, "20,999 characters are three 8,000-character pages")
+        XCTAssertEqual(pages.joined(), SchemeMailFixture.longBody)
+    }
+
+    func testAnOffsetPastTheEndOfTheBodyIsRefused() async {
+        let response = await fixture.withMailRoot {
+            await MailProvider().read(input: [
+                "id": .string("3002"),
+                "offset": .number(Double(SchemeMailFixture.longBody.count))
+            ])
+        }
+
+        XCTAssertFalse(response.ok)
+        XCTAssertTrue(response.message?.contains(String(SchemeMailFixture.longBody.count)) == true, response.message ?? "")
+    }
+
     func testBodySearchFindsAMessageInASchemeMailbox() async {
         let response = await fixture.withMailRoot {
             await MailProvider().search(input: [
@@ -123,6 +154,8 @@ private final class CheckpointProbe: @unchecked Sendable {
 private final class SchemeMailFixture {
     static let exchangeAccount = "7EB4C59D-0000-4000-8000-000000000001"
     static let imapAccount = "985C7C64-0000-4000-8000-000000000002"
+    static let longBody = (0..<1_000).map { String(format: "line %04d ends here.\n", $0) }.joined()
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 
     let root: URL
     private let outside: URL
@@ -172,6 +205,7 @@ private final class SchemeMailFixture {
                 + "--_000_FOLDED_--\r\n",
             to: foldedMessages.appendingPathComponent("3001.emlx")
         )
+        try Self.write(body: Self.longBody, to: foldedMessages.appendingPathComponent("3002.emlx"))
 
         var database: OpaquePointer?
         guard sqlite3_open(mailData.appendingPathComponent("Envelope Index").path, &database) == SQLITE_OK,
@@ -202,7 +236,8 @@ private final class SchemeMailFixture {
                 (12, 'm12', 2, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 2),
                 (13, 'm13', 3, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 3),
                 (2001, 'm2001', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1),
-                (3001, 'm3001', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1);
+                (3001, 'm3001', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1),
+                (3002, 'm3002', 1, 1, \(Date().timeIntervalSince1970), 0, 0, 0, 1);
             """,
             on: database
         )

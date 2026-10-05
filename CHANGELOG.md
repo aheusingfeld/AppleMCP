@@ -4,6 +4,7 @@
 
 - Fix `mail_read` reporting `emlx_not_found` and `body` search matching nothing for real Mail stores (#35). Mail stores every mailbox url with a scheme (`ews://`, `imap://`, `local://`), which skipped the direct file lookup, so a body was only found if the 50,000-entry walk of the whole store happened to reach it. Scheme urls now resolve to `<account>/<Folder>.mbox/<store>/Data/<shards>/Messages`; a miss walks only that mailbox before the whole store.
 - Fix empty Mail bodies (`no_text_extracted`) for messages with folded headers, as Exchange writes them. Header lookup stopped at the first line break, so `Content-Type: multipart/…;` lost its `boundary=` continuation line and no part was extracted. Headers are now unfolded per RFC 5322 before matching.
+- Add `offset` to `mail_read` so a body longer than 8,000 characters can be read completely, page by page. Responses report `body_offset`, `body_total_chars` and, while more text follows, `body_next_offset`; `offset` is limited to 0…4,194,304 and an offset past the end is refused. Each response stays within the existing 8,000-character bound.
 
 - Build 20: include the Mail flag metadata and filters in the next TestFlight candidate.
 

@@ -189,7 +189,7 @@ public struct M3MCPToolArgumentPolicy: Equatable, Sendable {
             return policy(strings: ["query", "role"])
 
         case .mailRead:
-            return policy(strings: ["id"], required: ["id"])
+            return policy(strings: ["id"], integerRanges: ["offset": 0...4_194_304], required: ["id"])
 
         case .remindersSearch:
             return queryPolicy(
